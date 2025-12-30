@@ -14,19 +14,7 @@ require('./database');
 
 const app = express();
 const port = process.env.PORT || 4000;
-// En développement, NODE_ENV n'est généralement pas défini ou vaut 'development'
-// On considère production uniquement si explicitement défini à 'production'
 const isProduction = process.env.NODE_ENV === 'production';
-
-// Log pour debug
-console.log('🔧 NODE_ENV:', process.env.NODE_ENV || 'undefined');
-console.log('🔧 Environment:', isProduction ? 'production' : 'development');
-
-// FORCER le mode développement si NODE_ENV n'est pas défini ou vaut 'development'
-// Cela évite les problèmes CORS en développement
-// Même si NODE_ENV=production, on autorise CORS en développement local
-const forceDev = !process.env.NODE_ENV || process.env.NODE_ENV === 'development' || process.env.FORCE_DEV === 'true';
-console.log('🔧 forceDev:', forceDev);
 
 // Rate limiting pour la sécurité (optionnel mais recommandé)
 let rateLimit;
@@ -37,10 +25,31 @@ try {
 }
 
 // Configuration CORS
-// TEMPORAIREMENT : Autorise TOUTES les origines pour résoudre le problème
-// TODO: Restreindre en production plus tard
 const corsOptions = {
-  origin: true, // Autorise toutes les origines
+  origin: function (origin, callback) {
+    // En développement, autoriser toutes les origines
+    if (!isProduction) {
+      return callback(null, true);
+    }
+    
+    // En production, utiliser FRONTEND_URL si défini
+    const allowedOrigins = process.env.FRONTEND_URL 
+      ? [process.env.FRONTEND_URL]
+      : [];
+    
+    // Si aucune origine n'est spécifiée en production, autoriser toutes (moins sécurisé)
+    if (allowedOrigins.length === 0) {
+      console.warn('⚠️  FRONTEND_URL non défini en production. CORS autorise toutes les origines.');
+      return callback(null, true);
+    }
+    
+    // Vérifier si l'origine est autorisée
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
@@ -258,7 +267,7 @@ app.post('/api/contact', async (req, res) => {
 
 // Middleware de gestion d'erreur global - DOIT être après toutes les routes
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err);
+  console.error('Unhandled error:', err.message || err);
   // Toujours retourner du JSON pour les routes API
   if (req.path.startsWith('/api')) {
     return res.status(err.status || 500).json({
@@ -278,13 +287,5 @@ if (process.env.DEBUG === 'true') {
 }
 
 app.listen(port, () => {
-  console.log(`\n🚀 Server listening on port ${port}`);
-  console.log(`📱 Frontend: http://localhost:${port}`);
-  console.log(`🔐 Dashboard: http://localhost:${port}/admin/login`);
-  console.log(`💚 Health: http://localhost:${port}/api/health`);
-  if (!isProduction && !distExists) {
-    console.log(`\n⚠️  Mode développement: Frontend servi par Vite (port 8080)`);
-    console.log(`   Démarrez aussi: npm run dev (dans un autre terminal)`);
-  }
-  console.log('');
+  console.log(`Server listening on port ${port}`);
 });

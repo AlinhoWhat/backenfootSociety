@@ -37,9 +37,7 @@ router.post('/login', async (req, res) => {
 
     res.json({ token, username: admin.username });
   } catch (error) {
-    console.error('Error during login:', error);
-    console.error('Error stack:', error.stack);
-    // Toujours retourner du JSON, jamais du HTML
+    console.error('Error during login:', error.message);
     res.status(500).json({ 
       error: 'Failed to login',
       details: process.env.NODE_ENV === 'development' ? error.message : undefined
