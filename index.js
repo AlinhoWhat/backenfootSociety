@@ -34,19 +34,27 @@ const corsOptions = {
     
     // En production, utiliser FRONTEND_URL si défini
     const allowedOrigins = process.env.FRONTEND_URL 
-      ? [process.env.FRONTEND_URL]
+      ? process.env.FRONTEND_URL.split(',').map(url => url.trim())
       : [];
     
-    // Si aucune origine n'est spécifiée en production, autoriser toutes (moins sécurisé)
+    // Si aucune origine n'est spécifiée en production, autoriser toutes (pour éviter les blocages)
+    // IMPORTANT: En production, définissez FRONTEND_URL pour la sécurité
     if (allowedOrigins.length === 0) {
       console.warn('⚠️  FRONTEND_URL non défini en production. CORS autorise toutes les origines.');
       return callback(null, true);
     }
     
+    // Si pas d'origine (requêtes depuis le même serveur, Postman, etc.), autoriser
+    if (!origin) {
+      return callback(null, true);
+    }
+    
     // Vérifier si l'origine est autorisée
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
+      console.error('❌ CORS: Origine non autorisée:', origin);
+      console.error('   Origines autorisées:', allowedOrigins);
       callback(new Error('Not allowed by CORS'));
     }
   },
