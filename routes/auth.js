@@ -14,6 +14,11 @@ router.post('/login', async (req, res) => {
       return res.status(400).json({ error: 'Username and password are required' });
     }
 
+    if (!JWT_SECRET) {
+      console.error('JWT_SECRET is not defined');
+      return res.status(500).json({ error: 'Server configuration error' });
+    }
+
     const admin = await dbGet('SELECT * FROM admins WHERE username = ?', [username]);
     if (!admin) {
       return res.status(401).json({ error: 'Invalid credentials' });
@@ -33,7 +38,12 @@ router.post('/login', async (req, res) => {
     res.json({ token, username: admin.username });
   } catch (error) {
     console.error('Error during login:', error);
-    res.status(500).json({ error: 'Failed to login' });
+    console.error('Error stack:', error.stack);
+    // Toujours retourner du JSON, jamais du HTML
+    res.status(500).json({ 
+      error: 'Failed to login',
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
+    });
   }
 });
 

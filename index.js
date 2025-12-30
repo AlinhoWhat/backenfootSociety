@@ -14,7 +14,19 @@ require('./database');
 
 const app = express();
 const port = process.env.PORT || 4000;
+// En développement, NODE_ENV n'est généralement pas défini ou vaut 'development'
+// On considère production uniquement si explicitement défini à 'production'
 const isProduction = process.env.NODE_ENV === 'production';
+
+// Log pour debug
+console.log('🔧 NODE_ENV:', process.env.NODE_ENV || 'undefined');
+console.log('🔧 Environment:', isProduction ? 'production' : 'development');
+
+// FORCER le mode développement si NODE_ENV n'est pas défini ou vaut 'development'
+// Cela évite les problèmes CORS en développement
+// Même si NODE_ENV=production, on autorise CORS en développement local
+const forceDev = !process.env.NODE_ENV || process.env.NODE_ENV === 'development' || process.env.FORCE_DEV === 'true';
+console.log('🔧 forceDev:', forceDev);
 
 // Rate limiting pour la sécurité (optionnel mais recommandé)
 let rateLimit;
@@ -25,36 +37,14 @@ try {
 }
 
 // Configuration CORS
-// En production, utilise FRONTEND_URL si défini, sinon autorise toutes les origines
-// En développement, autorise toutes les origines
+// TEMPORAIREMENT : Autorise TOUTES les origines pour résoudre le problème
+// TODO: Restreindre en production plus tard
 const corsOptions = {
-  origin: function (origin, callback) {
-    // En développement, autoriser toutes les origines
-    if (!isProduction) {
-      return callback(null, true);
-    }
-    
-    // En production, vérifier FRONTEND_URL
-    const allowedOrigins = process.env.FRONTEND_URL 
-      ? [process.env.FRONTEND_URL]
-      : [];
-    
-    // Si aucune origine n'est spécifiée en production, autoriser toutes (moins sécurisé mais fonctionnel)
-    if (allowedOrigins.length === 0) {
-      console.warn('⚠️  FRONTEND_URL non défini en production. CORS autorise toutes les origines.');
-      return callback(null, true);
-    }
-    
-    // Vérifier si l'origine est autorisée
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+  origin: true, // Autorise toutes les origines
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  exposedHeaders: ['Content-Range', 'X-Content-Range']
 };
 
 app.use(cors(corsOptions));
@@ -264,6 +254,19 @@ app.post('/api/contact', async (req, res) => {
     if (err && err.response) console.error('SMTP response:', err.response);
     return res.status(500).json({ error: err && err.message ? err.message : 'Failed to send email', details: err && err.response ? err.response : undefined });
   }
+});
+
+// Middleware de gestion d'erreur global - DOIT être après toutes les routes
+app.use((err, req, res, next) => {
+  console.error('Unhandled error:', err);
+  // Toujours retourner du JSON pour les routes API
+  if (req.path.startsWith('/api')) {
+    return res.status(err.status || 500).json({
+      error: err.message || 'Internal server error',
+      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
+  }
+  next(err);
 });
 
 // Middleware de logging pour debug (optionnel)
