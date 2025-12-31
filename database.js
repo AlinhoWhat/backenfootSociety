@@ -64,10 +64,16 @@ db.serialize(() => {
     CREATE TABLE IF NOT EXISTS admins (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT UNIQUE NOT NULL,
+      email TEXT,
       password TEXT NOT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
+
+  // Ajouter la colonne email si elle n'existe pas
+  db.run(`ALTER TABLE admins ADD COLUMN email TEXT`, (err) => {
+    // Ignorer l'erreur si la colonne existe déjà
+  });
 
   // Table pour les tokens de réinitialisation de mot de passe
   db.run(`

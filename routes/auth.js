@@ -49,7 +49,7 @@ router.post('/login', async (req, res) => {
 // GET /api/auth/admins - Lister tous les admins (admin only)
 router.get('/admins', authenticateToken, async (req, res) => {
   try {
-    const admins = await dbAll('SELECT id, username, created_at FROM admins ORDER BY created_at DESC');
+    const admins = await dbAll('SELECT id, username, email, created_at FROM admins ORDER BY created_at DESC');
     res.json(admins);
   } catch (error) {
     console.error('Error fetching admins:', error);
@@ -60,7 +60,7 @@ router.get('/admins', authenticateToken, async (req, res) => {
 // POST /api/auth/admins - Créer un nouveau compte admin (admin only)
 router.post('/admins', authenticateToken, async (req, res) => {
   try {
-    const { username, password } = req.body;
+    const { username, email, password } = req.body;
 
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password are required' });
@@ -70,14 +70,27 @@ router.post('/admins', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
+    // Valider l'email si fourni
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Invalid email format' });
+    }
+
     // Vérifier si l'utilisateur existe déjà
     const existing = await dbGet('SELECT * FROM admins WHERE username = ?', [username]);
     if (existing) {
       return res.status(400).json({ error: 'Username already exists' });
     }
 
+    // Vérifier si l'email existe déjà (si fourni)
+    if (email) {
+      const existingEmail = await dbGet('SELECT * FROM admins WHERE email = ?', [email]);
+      if (existingEmail) {
+        return res.status(400).json({ error: 'Email already exists' });
+      }
+    }
+
     const hashedPassword = await bcrypt.hash(password, 10);
-    await dbRun('INSERT INTO admins (username, password) VALUES (?, ?)', [username, hashedPassword]);
+    await dbRun('INSERT INTO admins (username, email, password) VALUES (?, ?, ?)', [username, email || null, hashedPassword]);
 
     res.status(201).json({ message: 'Admin created successfully' });
   } catch (error) {
@@ -113,16 +126,28 @@ router.delete('/admins/:id', authenticateToken, async (req, res) => {
 // POST /api/auth/forgot-password - Demander une réinitialisation de mot de passe
 router.post('/forgot-password', async (req, res) => {
   try {
-    const { username } = req.body;
+    const { username, email } = req.body;
 
-    if (!username) {
-      return res.status(400).json({ error: 'Username is required' });
+    if (!username && !email) {
+      return res.status(400).json({ error: 'Username or email is required' });
     }
 
-    const admin = await dbGet('SELECT * FROM admins WHERE username = ?', [username]);
+    // Chercher par username ou email
+    let admin;
+    if (email) {
+      admin = await dbGet('SELECT * FROM admins WHERE email = ?', [email]);
+    } else {
+      admin = await dbGet('SELECT * FROM admins WHERE username = ?', [username]);
+    }
+
     if (!admin) {
       // Ne pas révéler si l'utilisateur existe ou non (sécurité)
-      return res.json({ message: 'If the username exists, a password reset email will be sent' });
+      return res.json({ message: 'If the username or email exists, a password reset email will be sent' });
+    }
+
+    // Vérifier que l'admin a un email enregistré
+    if (!admin.email) {
+      return res.status(400).json({ error: 'No email address registered for this account. Please contact an administrator.' });
     }
 
     // Générer un token sécurisé
@@ -163,7 +188,7 @@ router.post('/forgot-password', async (req, res) => {
 
         const mailOptions = {
           from: process.env.SMTP_USER,
-          to: process.env.ADMIN_EMAIL || process.env.SMTP_USER,
+          to: admin.email,
           subject: 'Réinitialisation de mot de passe - FootSociety Admin',
           html: `
             <h2>Réinitialisation de mot de passe</h2>
@@ -202,7 +227,7 @@ Ce lien expire dans 1 heure.
     }
 
     res.json({ 
-      message: 'If the username exists, a password reset email will be sent',
+      message: 'If the username or email exists, a password reset email will be sent',
       // En développement, retourner le lien (à retirer en production)
       resetUrl: process.env.NODE_ENV === 'development' ? resetUrl : undefined
     });
