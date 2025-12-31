@@ -22,7 +22,36 @@ const upload = multer({
 router.get('/', async (req, res) => {
   try {
     const { featured, published } = req.query;
-    let sql = 'SELECT * FROM blog_articles WHERE 1=1';
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    
+    // Si authentifié, inclure les infos de l'admin créateur
+    let sql;
+    let includeCreator = false;
+    
+    if (token) {
+      try {
+        const jwt = require('jsonwebtoken');
+        const { JWT_SECRET } = require('../middleware/auth');
+        jwt.verify(token, JWT_SECRET);
+        includeCreator = true;
+      } catch (err) {
+        // Token invalide ou expiré, continuer sans infos créateur
+      }
+    }
+    
+    if (includeCreator) {
+      sql = `SELECT 
+        ba.*,
+        a.username as created_by_username,
+        a.id as created_by_id
+      FROM blog_articles ba
+      LEFT JOIN admins a ON ba.created_by = a.id
+      WHERE 1=1`;
+    } else {
+      sql = 'SELECT * FROM blog_articles WHERE 1=1';
+    }
+    
     const params = [];
 
     // Si on demande seulement les publiés (pour le frontend)
@@ -50,7 +79,36 @@ router.get('/', async (req, res) => {
 // GET /api/blog/:id - Récupérer un article spécifique
 router.get('/:id', async (req, res) => {
   try {
-    const article = await dbGet('SELECT * FROM blog_articles WHERE id = ?', [req.params.id]);
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    let includeCreator = false;
+    
+    if (token) {
+      try {
+        const jwt = require('jsonwebtoken');
+        const { JWT_SECRET } = require('../middleware/auth');
+        jwt.verify(token, JWT_SECRET);
+        includeCreator = true;
+      } catch (err) {
+        // Token invalide ou expiré, continuer sans infos créateur
+      }
+    }
+    
+    let article;
+    if (includeCreator) {
+      article = await dbGet(`
+        SELECT 
+          ba.*,
+          a.username as created_by_username,
+          a.id as created_by_id
+        FROM blog_articles ba
+        LEFT JOIN admins a ON ba.created_by = a.id
+        WHERE ba.id = ?
+      `, [req.params.id]);
+    } else {
+      article = await dbGet('SELECT * FROM blog_articles WHERE id = ?', [req.params.id]);
+    }
+    
     if (!article) {
       return res.status(404).json({ error: 'Article not found' });
     }
@@ -111,8 +169,8 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
     const imagesJson = imagesArray.length > 0 ? JSON.stringify(imagesArray) : null;
 
     const result = await dbRun(
-      `INSERT INTO blog_articles (title, excerpt, content, author, category, image_url, images, featured, read_time, published, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      `INSERT INTO blog_articles (title, excerpt, content, author, category, image_url, images, featured, read_time, published, created_by, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
       [
         title,
         excerpt || null,
@@ -123,11 +181,20 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
         imagesJson,
         featured === 'true' || featured === true ? 1 : 0,
         read_time || null,
-        published === 'true' || published === true ? 1 : 0
+        published === 'true' || published === true ? 1 : 0,
+        req.user.id // ID de l'admin qui crée l'article
       ]
     );
 
-    const newArticle = await dbGet('SELECT * FROM blog_articles WHERE id = ?', [result.id]);
+    const newArticle = await dbGet(`
+      SELECT 
+        ba.*,
+        a.username as created_by_username,
+        a.id as created_by_id
+      FROM blog_articles ba
+      LEFT JOIN admins a ON ba.created_by = a.id
+      WHERE ba.id = ?
+    `, [result.id]);
     res.status(201).json(newArticle);
   } catch (error) {
     console.error('Error creating blog article:', error);

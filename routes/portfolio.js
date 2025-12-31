@@ -75,7 +75,36 @@ router.get('/', async (req, res) => {
 // GET /api/portfolio/:id - Récupérer une réalisation spécifique
 router.get('/:id', async (req, res) => {
   try {
-    const item = await dbGet('SELECT * FROM portfolio_items WHERE id = ?', [req.params.id]);
+    const authHeader = req.headers['authorization'];
+    const token = authHeader && authHeader.split(' ')[1];
+    let includeCreator = false;
+    
+    if (token) {
+      try {
+        const jwt = require('jsonwebtoken');
+        const { JWT_SECRET } = require('../middleware/auth');
+        jwt.verify(token, JWT_SECRET);
+        includeCreator = true;
+      } catch (err) {
+        // Token invalide ou expiré, continuer sans infos créateur
+      }
+    }
+    
+    let item;
+    if (includeCreator) {
+      item = await dbGet(`
+        SELECT 
+          pi.*,
+          a.username as created_by_username,
+          a.id as created_by_id
+        FROM portfolio_items pi
+        LEFT JOIN admins a ON pi.created_by = a.id
+        WHERE pi.id = ?
+      `, [req.params.id]);
+    } else {
+      item = await dbGet('SELECT * FROM portfolio_items WHERE id = ?', [req.params.id]);
+    }
+    
     if (!item) {
       return res.status(404).json({ error: 'Portfolio item not found' });
     }
@@ -165,8 +194,8 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
     const imagesJson = imagesArray.length > 0 ? JSON.stringify(imagesArray) : null;
 
     const result = await dbRun(
-      `INSERT INTO portfolio_items (title, description, content, category, image_url, images, tags, stats, featured, published, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+      `INSERT INTO portfolio_items (title, description, content, category, image_url, images, tags, stats, featured, published, created_by, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
       [
         title,
         description || null,
@@ -177,11 +206,20 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
         tagsJson,
         stats || null,
         featured === 'true' || featured === true ? 1 : 0,
-        published === 'true' || published === true ? 1 : 0
+        published === 'true' || published === true ? 1 : 0,
+        req.user.id // ID de l'admin qui crée la réalisation
       ]
     );
 
-    const newItem = await dbGet('SELECT * FROM portfolio_items WHERE id = ?', [result.id]);
+    const newItem = await dbGet(`
+      SELECT 
+        pi.*,
+        a.username as created_by_username,
+        a.id as created_by_id
+      FROM portfolio_items pi
+      LEFT JOIN admins a ON pi.created_by = a.id
+      WHERE pi.id = ?
+    `, [result.id]);
     if (newItem && newItem.tags) {
       try {
         newItem.tags = JSON.parse(newItem.tags);

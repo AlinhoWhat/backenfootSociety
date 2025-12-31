@@ -30,6 +30,11 @@ db.serialize(() => {
     // Ignorer l'erreur si la colonne existe déjà
   });
 
+  // Ajouter la colonne created_by si elle n'existe pas
+  db.run(`ALTER TABLE blog_articles ADD COLUMN created_by INTEGER`, (err) => {
+    // Ignorer l'erreur si la colonne existe déjà
+  });
+
   // Table pour les réalisations (portfolio)
   db.run(`
     CREATE TABLE IF NOT EXISTS portfolio_items (
@@ -56,6 +61,11 @@ db.serialize(() => {
   
   // Ajouter la colonne content si elle n'existe pas
   db.run(`ALTER TABLE portfolio_items ADD COLUMN content TEXT`, (err) => {
+    // Ignorer l'erreur si la colonne existe déjà
+  });
+
+  // Ajouter la colonne created_by si elle n'existe pas
+  db.run(`ALTER TABLE portfolio_items ADD COLUMN created_by INTEGER`, (err) => {
     // Ignorer l'erreur si la colonne existe déjà
   });
 
