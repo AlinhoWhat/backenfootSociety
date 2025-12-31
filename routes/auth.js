@@ -2,8 +2,8 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { dbGet, dbRun } = require('../database');
-const { JWT_SECRET } = require('../middleware/auth');
+const { dbGet, dbRun, dbAll } = require('../database');
+const { JWT_SECRET, authenticateToken } = require('../middleware/auth');
 
 // POST /api/auth/login - Connexion admin
 router.post('/login', async (req, res) => {
@@ -45,13 +45,19 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// POST /api/auth/register - Créer un compte admin (DÉSACTIVÉ EN PRODUCTION)
-router.post('/register', async (req, res) => {
-  // Désactiver l'enregistrement en production pour la sécurité
-  if (process.env.NODE_ENV === 'production') {
-    return res.status(403).json({ error: 'Registration is disabled in production. Use the init-admin script instead.' });
+// GET /api/auth/admins - Lister tous les admins (admin only)
+router.get('/admins', authenticateToken, async (req, res) => {
+  try {
+    const admins = await dbAll('SELECT id, username, created_at FROM admins ORDER BY created_at DESC');
+    res.json(admins);
+  } catch (error) {
+    console.error('Error fetching admins:', error);
+    res.status(500).json({ error: 'Failed to fetch admins' });
   }
+});
 
+// POST /api/auth/admins - Créer un nouveau compte admin (admin only)
+router.post('/admins', authenticateToken, async (req, res) => {
   try {
     const { username, password } = req.body;
 
@@ -74,8 +80,32 @@ router.post('/register', async (req, res) => {
 
     res.status(201).json({ message: 'Admin created successfully' });
   } catch (error) {
-    console.error('Error during registration:', error);
+    console.error('Error creating admin:', error);
     res.status(500).json({ error: 'Failed to create admin' });
+  }
+});
+
+// DELETE /api/auth/admins/:id - Supprimer un admin (admin only)
+router.delete('/admins/:id', authenticateToken, async (req, res) => {
+  try {
+    const adminId = parseInt(req.params.id);
+    const currentAdminId = req.user.id;
+
+    // Empêcher de se supprimer soi-même
+    if (adminId === currentAdminId) {
+      return res.status(400).json({ error: 'You cannot delete your own account' });
+    }
+
+    const admin = await dbGet('SELECT * FROM admins WHERE id = ?', [adminId]);
+    if (!admin) {
+      return res.status(404).json({ error: 'Admin not found' });
+    }
+
+    await dbRun('DELETE FROM admins WHERE id = ?', [adminId]);
+    res.json({ message: 'Admin deleted successfully' });
+  } catch (error) {
+    console.error('Error deleting admin:', error);
+    res.status(500).json({ error: 'Failed to delete admin' });
   }
 });
 
