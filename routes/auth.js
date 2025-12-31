@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const crypto = require('crypto');
 const { dbGet, dbRun, dbAll } = require('../database');
 const { JWT_SECRET, authenticateToken } = require('../middleware/auth');
 
@@ -106,6 +107,147 @@ router.delete('/admins/:id', authenticateToken, async (req, res) => {
   } catch (error) {
     console.error('Error deleting admin:', error);
     res.status(500).json({ error: 'Failed to delete admin' });
+  }
+});
+
+// POST /api/auth/forgot-password - Demander une réinitialisation de mot de passe
+router.post('/forgot-password', async (req, res) => {
+  try {
+    const { username } = req.body;
+
+    if (!username) {
+      return res.status(400).json({ error: 'Username is required' });
+    }
+
+    const admin = await dbGet('SELECT * FROM admins WHERE username = ?', [username]);
+    if (!admin) {
+      // Ne pas révéler si l'utilisateur existe ou non (sécurité)
+      return res.json({ message: 'If the username exists, a password reset email will be sent' });
+    }
+
+    // Générer un token sécurisé
+    const resetToken = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 3600000); // 1 heure
+
+    // Supprimer les anciens tokens non utilisés pour cet admin
+    await dbRun('DELETE FROM password_reset_tokens WHERE admin_id = ? AND used = 0', [admin.id]);
+
+    // Créer le nouveau token
+    await dbRun(
+      'INSERT INTO password_reset_tokens (admin_id, token, expires_at) VALUES (?, ?, ?)',
+      [admin.id, resetToken, expiresAt.toISOString()]
+    );
+
+    // Construire l'URL de réinitialisation
+    const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:8080';
+    const resetUrl = `${frontendUrl}/admin/reset-password?token=${resetToken}`;
+
+    // Envoyer l'email de réinitialisation
+    try {
+      // Créer un transporter temporaire pour l'email
+      const nodemailer = require('nodemailer');
+      const smtpHost = process.env.SMTP_HOST || 'ssl0.ovh.net';
+      const smtpPort = Number(process.env.SMTP_PORT) || 465;
+      const smtpSecure = smtpPort === 465;
+
+      if (smtpHost && process.env.SMTP_USER && process.env.SMTP_PASS) {
+        const emailTransporter = nodemailer.createTransport({
+          host: smtpHost,
+          port: smtpPort,
+          secure: smtpSecure,
+          auth: {
+            user: process.env.SMTP_USER,
+            pass: process.env.SMTP_PASS,
+          },
+        });
+
+        const mailOptions = {
+          from: process.env.SMTP_USER,
+          to: process.env.ADMIN_EMAIL || process.env.SMTP_USER,
+          subject: 'Réinitialisation de mot de passe - FootSociety Admin',
+          html: `
+            <h2>Réinitialisation de mot de passe</h2>
+            <p>Bonjour ${admin.username},</p>
+            <p>Vous avez demandé une réinitialisation de votre mot de passe administrateur.</p>
+            <p>Cliquez sur le lien ci-dessous pour réinitialiser votre mot de passe (valide pendant 1 heure) :</p>
+            <p><a href="${resetUrl}" style="background-color: #dc2626; color: white; padding: 10px 20px; text-decoration: none; border-radius: 5px; display: inline-block;">Réinitialiser mon mot de passe</a></p>
+            <p>Ou copiez ce lien dans votre navigateur :</p>
+            <p>${resetUrl}</p>
+            <p>Si vous n'avez pas demandé cette réinitialisation, ignorez cet email.</p>
+            <p>Ce lien expire dans 1 heure.</p>
+          `,
+          text: `
+Réinitialisation de mot de passe
+
+Bonjour ${admin.username},
+
+Vous avez demandé une réinitialisation de votre mot de passe administrateur.
+
+Cliquez sur ce lien pour réinitialiser votre mot de passe (valide pendant 1 heure) :
+${resetUrl}
+
+Si vous n'avez pas demandé cette réinitialisation, ignorez cet email.
+Ce lien expire dans 1 heure.
+          `
+        };
+
+        await emailTransporter.sendMail(mailOptions);
+        console.log('Password reset email sent');
+      } else {
+        console.warn('SMTP not configured, password reset link:', resetUrl);
+      }
+    } catch (emailError) {
+      console.error('Error sending password reset email:', emailError);
+      // Ne pas bloquer la réponse si l'email échoue
+    }
+
+    res.json({ 
+      message: 'If the username exists, a password reset email will be sent',
+      // En développement, retourner le lien (à retirer en production)
+      resetUrl: process.env.NODE_ENV === 'development' ? resetUrl : undefined
+    });
+  } catch (error) {
+    console.error('Error in forgot-password:', error);
+    res.status(500).json({ error: 'Failed to process password reset request' });
+  }
+});
+
+// POST /api/auth/reset-password - Réinitialiser le mot de passe avec un token
+router.post('/reset-password', async (req, res) => {
+  try {
+    const { token, password } = req.body;
+
+    if (!token || !password) {
+      return res.status(400).json({ error: 'Token and password are required' });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    // Vérifier le token
+    const resetToken = await dbGet(
+      'SELECT * FROM password_reset_tokens WHERE token = ? AND used = 0 AND expires_at > datetime("now")',
+      [token]
+    );
+
+    if (!resetToken) {
+      return res.status(400).json({ error: 'Invalid or expired token' });
+    }
+
+    // Hasher le nouveau mot de passe
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Mettre à jour le mot de passe
+    await dbRun('UPDATE admins SET password = ? WHERE id = ?', [hashedPassword, resetToken.admin_id]);
+
+    // Marquer le token comme utilisé
+    await dbRun('UPDATE password_reset_tokens SET used = 1 WHERE id = ?', [resetToken.id]);
+
+    res.json({ message: 'Password reset successfully' });
+  } catch (error) {
+    console.error('Error in reset-password:', error);
+    res.status(500).json({ error: 'Failed to reset password' });
   }
 });
 
