@@ -95,6 +95,7 @@ router.get('/:id', async (req, res) => {
       item = await dbGet(`
         SELECT 
           pi.*,
+          a.username as author,
           a.username as created_by_username,
           a.id as created_by_id
         FROM portfolio_items pi
@@ -102,7 +103,14 @@ router.get('/:id', async (req, res) => {
         WHERE pi.id = ?
       `, [req.params.id]);
     } else {
-      item = await dbGet('SELECT * FROM portfolio_items WHERE id = ?', [req.params.id]);
+      item = await dbGet(`
+        SELECT 
+          pi.*,
+          a.username as author
+        FROM portfolio_items pi
+        LEFT JOIN admins a ON pi.created_by = a.id
+        WHERE pi.id = ?
+      `, [req.params.id]);
     }
     
     if (!item) {
@@ -142,6 +150,10 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
     if (!title) {
       return res.status(400).json({ error: 'Title is required' });
     }
+
+    // Récupérer le nom d'utilisateur de l'admin connecté pour l'auteur
+    const admin = await dbGet('SELECT username FROM admins WHERE id = ?', [req.user.id]);
+    const author = admin ? admin.username : req.user.username;
 
     let imageUrl = null;
     let imagesArray = [];
@@ -214,6 +226,7 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
     const newItem = await dbGet(`
       SELECT 
         pi.*,
+        a.username as author,
         a.username as created_by_username,
         a.id as created_by_id
       FROM portfolio_items pi
@@ -327,7 +340,14 @@ router.put('/:id', authenticateToken, upload.array('images', 5), async (req, res
       ]
     );
 
-    const updatedItem = await dbGet('SELECT * FROM portfolio_items WHERE id = ?', [req.params.id]);
+    const updatedItem = await dbGet(`
+      SELECT 
+        pi.*,
+        a.username as author
+      FROM portfolio_items pi
+      LEFT JOIN admins a ON pi.created_by = a.id
+      WHERE pi.id = ?
+    `, [req.params.id]);
     updatedItem.tags = updatedItem.tags ? JSON.parse(updatedItem.tags) : [];
     res.json(updatedItem);
   } catch (error) {

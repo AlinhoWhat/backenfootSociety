@@ -40,17 +40,21 @@ router.get('/', async (req, res) => {
       }
     }
     
+    // Toujours utiliser le JOIN pour récupérer l'auteur dynamique depuis l'admin
+    sql = `SELECT 
+      ba.*,
+      COALESCE(a.username, ba.author) as author`;
+    
     if (includeCreator) {
-      sql = `SELECT 
-        ba.*,
-        a.username as created_by_username,
-        a.id as created_by_id
+      sql += `,
+      a.username as created_by_username,
+      a.id as created_by_id`;
+    }
+    
+    sql += `
       FROM blog_articles ba
       LEFT JOIN admins a ON ba.created_by = a.id
       WHERE 1=1`;
-    } else {
-      sql = 'SELECT * FROM blog_articles WHERE 1=1';
-    }
     
     const params = [];
 
@@ -99,6 +103,7 @@ router.get('/:id', async (req, res) => {
       article = await dbGet(`
         SELECT 
           ba.*,
+          COALESCE(a.username, ba.author) as author,
           a.username as created_by_username,
           a.id as created_by_id
         FROM blog_articles ba
@@ -106,7 +111,14 @@ router.get('/:id', async (req, res) => {
         WHERE ba.id = ?
       `, [req.params.id]);
     } else {
-      article = await dbGet('SELECT * FROM blog_articles WHERE id = ?', [req.params.id]);
+      article = await dbGet(`
+        SELECT 
+          ba.*,
+          COALESCE(a.username, ba.author) as author
+        FROM blog_articles ba
+        LEFT JOIN admins a ON ba.created_by = a.id
+        WHERE ba.id = ?
+      `, [req.params.id]);
     }
     
     if (!article) {
@@ -132,11 +144,15 @@ router.get('/:id', async (req, res) => {
 // POST /api/blog - Créer un nouvel article (admin only)
 router.post('/', authenticateToken, upload.array('images', 5), async (req, res) => {
   try {
-    const { title, excerpt, content, author, category, featured, read_time, published } = req.body;
+    const { title, excerpt, content, category, featured, read_time, published } = req.body;
     
     if (!title) {
       return res.status(400).json({ error: 'Title is required' });
     }
+
+    // Récupérer le nom d'utilisateur de l'admin connecté pour l'auteur
+    const admin = await dbGet('SELECT username FROM admins WHERE id = ?', [req.user.id]);
+    const author = admin ? admin.username : req.user.username;
 
     let imageUrl = null;
     let imagesArray = [];
@@ -175,7 +191,7 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
         title,
         excerpt || null,
         content || null,
-        author || null,
+        author, // Utiliser le nom d'utilisateur de l'admin connecté
         category || null,
         imageUrl,
         imagesJson,
@@ -189,6 +205,7 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
     const newArticle = await dbGet(`
       SELECT 
         ba.*,
+        COALESCE(a.username, ba.author) as author,
         a.username as created_by_username,
         a.id as created_by_id
       FROM blog_articles ba
@@ -205,7 +222,8 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
 // PUT /api/blog/:id - Mettre à jour un article (admin only)
 router.put('/:id', authenticateToken, upload.single('image'), async (req, res) => {
   try {
-    const { title, excerpt, content, author, category, featured, read_time, published } = req.body;
+    const { title, excerpt, content, category, featured, read_time, published } = req.body;
+    // L'auteur n'est plus modifiable, il reste lié au créateur original
     
     const existing = await dbGet('SELECT * FROM blog_articles WHERE id = ?', [req.params.id]);
     if (!existing) {
@@ -244,16 +262,16 @@ router.put('/:id', authenticateToken, upload.single('image'), async (req, res) =
       }
     }
 
+    // L'auteur n'est plus modifiable, il reste lié au créateur original via created_by
     await dbRun(
       `UPDATE blog_articles 
-       SET title = ?, excerpt = ?, content = ?, author = ?, category = ?, image_url = ?, 
+       SET title = ?, excerpt = ?, content = ?, category = ?, image_url = ?, 
            featured = ?, read_time = ?, published = ?, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [
         title || existing.title,
         excerpt !== undefined ? excerpt : existing.excerpt,
         content !== undefined ? content : existing.content,
-        author !== undefined ? author : existing.author,
         category !== undefined ? category : existing.category,
         imageUrl,
         featured !== undefined ? (featured === 'true' || featured === true ? 1 : 0) : existing.featured,
