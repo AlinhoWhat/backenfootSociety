@@ -42,11 +42,14 @@ router.post('/login', async (req, res) => {
       is_super_admin: admin.is_super_admin || 0
     });
   } catch (error) {
-    console.error('Error during login:', error.message);
-    res.status(500).json({ 
-      error: 'Failed to login',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    console.error('Error during login:', error);
+    // S'assurer de toujours retourner du JSON
+    if (!res.headersSent) {
+      res.status(500).json({ 
+        error: 'Failed to login',
+        details: process.env.NODE_ENV === 'development' ? (error.message || String(error)) : undefined
+      });
+    }
   }
 });
 
