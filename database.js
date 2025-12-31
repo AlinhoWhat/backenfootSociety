@@ -66,12 +66,18 @@ db.serialize(() => {
       username TEXT UNIQUE NOT NULL,
       email TEXT,
       password TEXT NOT NULL,
+      is_super_admin INTEGER DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
   `);
 
   // Ajouter la colonne email si elle n'existe pas
   db.run(`ALTER TABLE admins ADD COLUMN email TEXT`, (err) => {
+    // Ignorer l'erreur si la colonne existe déjà
+  });
+
+  // Ajouter la colonne is_super_admin si elle n'existe pas
+  db.run(`ALTER TABLE admins ADD COLUMN is_super_admin INTEGER DEFAULT 0`, (err) => {
     // Ignorer l'erreur si la colonne existe déjà
   });
 
