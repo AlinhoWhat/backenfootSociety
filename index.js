@@ -72,10 +72,20 @@ app.use(express.urlencoded({ extended: true }));
 if (rateLimit) {
   const authLimiter = rateLimit({
     windowMs: 15 * 60 * 1000, // 15 minutes
-    max: 5, // 5 tentatives max par IP
+    max: 20, // 20 tentatives max par IP (augmenté pour éviter les blocages sur Render)
     message: 'Trop de tentatives de connexion. Veuillez réessayer dans 15 minutes.',
     standardHeaders: true,
     legacyHeaders: false,
+    // Sur Render, les IPs peuvent être partagées, donc on est plus permissif
+    skip: (req) => {
+      // En développement, ne pas appliquer le rate limiting
+      return !isProduction;
+    },
+    handler: (req, res) => {
+      res.status(429).json({ 
+        error: 'Trop de tentatives de connexion. Veuillez réessayer dans 15 minutes.' 
+      });
+    },
   });
   
   app.use('/api/auth/login', authLimiter);
