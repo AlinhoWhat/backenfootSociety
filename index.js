@@ -106,10 +106,19 @@ if (isProduction || distExists) {
         return next();
       }
       // Servir les fichiers statiques pour les autres routes
+      // Si le fichier n'existe pas, continuer vers la route catch-all
       express.static(frontendPath, {
         maxAge: '1d',
-        etag: true
-      })(req, res, next);
+        etag: true,
+        fallthrough: true // Permet de continuer si le fichier n'existe pas
+      })(req, res, (err) => {
+        // Si erreur 404, continuer vers la route catch-all (SPA routing)
+        if (err && err.status === 404) {
+          return next();
+        }
+        // Sinon, passer l'erreur
+        next(err);
+      });
     });
     
     console.log(`✅ Frontend statique servi depuis: ${frontendPath}`);
@@ -122,12 +131,18 @@ if (isProduction || distExists) {
         return res.status(404).json({ error: 'API route not found' });
       }
       
+      // Ne pas servir index.html pour les fichiers statiques (images, CSS, JS, etc.)
+      if (req.path.match(/\.(js|css|png|jpg|jpeg|gif|svg|ico|woff|woff2|ttf|eot|json|xml|txt|pdf)$/i)) {
+        return res.status(404).send('File not found');
+      }
+      
       // Vérifier que index.html existe
       const indexPath = path.join(frontendPath, 'index.html');
       if (!fs.existsSync(indexPath)) {
         return res.status(500).send('Frontend not built. Run "npm run build" first.');
       }
       
+      // Servir index.html pour toutes les autres routes (SPA routing)
       res.sendFile(indexPath, (err) => {
         if (err) {
           console.error('Error sending index.html:', err);

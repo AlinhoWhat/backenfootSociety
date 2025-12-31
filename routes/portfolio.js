@@ -315,10 +315,32 @@ router.put('/:id', authenticateToken, upload.array('images', 5), async (req, res
 
     const imagesJson = imagesArray.length > 0 ? JSON.stringify(imagesArray) : null;
 
-    // Convertir tags array en JSON string
-    const tagsJson = tags !== undefined 
-      ? (typeof tags === 'string' ? tags : JSON.stringify(tags))
-      : existing.tags;
+    // Convertir tags en JSON string
+    let tagsJson = existing.tags;
+    if (tags !== undefined) {
+      if (typeof tags === 'string') {
+        // Si c'est une string avec des virgules, créer un array
+        if (tags.includes(',')) {
+          const tagsArray = tags.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0);
+          tagsJson = tagsArray.length > 0 ? JSON.stringify(tagsArray) : null;
+        } else if (tags.length > 0) {
+          // Si c'est une string simple, créer un array avec un seul élément
+          tagsJson = JSON.stringify([tags.trim()]);
+        } else {
+          tagsJson = null;
+        }
+      } else if (Array.isArray(tags)) {
+        tagsJson = JSON.stringify(tags);
+      } else {
+        // Si c'est déjà du JSON string, l'utiliser tel quel
+        try {
+          JSON.parse(tags);
+          tagsJson = tags;
+        } catch (e) {
+          tagsJson = JSON.stringify([tags]);
+        }
+      }
+    }
 
     await dbRun(
       `UPDATE portfolio_items 
@@ -348,7 +370,23 @@ router.put('/:id', authenticateToken, upload.array('images', 5), async (req, res
       LEFT JOIN admins a ON pi.created_by = a.id
       WHERE pi.id = ?
     `, [req.params.id]);
-    updatedItem.tags = updatedItem.tags ? JSON.parse(updatedItem.tags) : [];
+    
+    // Parser les tags en toute sécurité
+    if (updatedItem.tags) {
+      try {
+        updatedItem.tags = JSON.parse(updatedItem.tags);
+      } catch (e) {
+        // Si le parsing échoue, essayer de traiter comme une string simple
+        if (typeof updatedItem.tags === 'string' && updatedItem.tags.length > 0) {
+          updatedItem.tags = [updatedItem.tags];
+        } else {
+          updatedItem.tags = [];
+        }
+      }
+    } else {
+      updatedItem.tags = [];
+    }
+    
     res.json(updatedItem);
   } catch (error) {
     console.error('Error updating portfolio item:', error);

@@ -71,8 +71,23 @@ router.get('/', async (req, res) => {
     sql += ' ORDER BY created_at DESC';
 
     const articles = await dbAll(sql, params);
-    // S'assurer que c'est toujours un tableau
-    res.json(Array.isArray(articles) ? articles : []);
+    
+    // Parser les images pour chaque article
+    const articlesWithParsedImages = Array.isArray(articles) ? articles.map(article => {
+      // Parser les images si elles existent
+      if (article.images) {
+        try {
+          article.images = JSON.parse(article.images);
+        } catch (e) {
+          article.images = [];
+        }
+      } else {
+        article.images = [];
+      }
+      return article;
+    }) : [];
+    
+    res.json(articlesWithParsedImages);
   } catch (error) {
     console.error('Error fetching blog articles:', error);
     // Retourner un tableau vide au lieu d'un objet d'erreur
@@ -220,9 +235,9 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
 });
 
 // PUT /api/blog/:id - Mettre à jour un article (admin only)
-router.put('/:id', authenticateToken, upload.single('image'), async (req, res) => {
+router.put('/:id', authenticateToken, upload.array('images', 5), async (req, res) => {
   try {
-    const { title, excerpt, content, category, featured, read_time, published } = req.body;
+    const { title, excerpt, content, category, featured, read_time, published, existingImages } = req.body;
     // L'auteur n'est plus modifiable, il reste lié au créateur original
     
     const existing = await dbGet('SELECT * FROM blog_articles WHERE id = ?', [req.params.id]);
@@ -231,41 +246,60 @@ router.put('/:id', authenticateToken, upload.single('image'), async (req, res) =
     }
 
     let imageUrl = existing.image_url;
+    let imagesArray = [];
 
-    // Upload new image to Cloudinary if provided
-    if (req.file) {
+    // Gérer les images existantes
+    if (existingImages) {
       try {
-        // Delete old image from Cloudinary if exists
-        if (existing.image_url) {
-          const publicId = existing.image_url.split('/').slice(-2).join('/').split('.')[0];
+        imagesArray = typeof existingImages === 'string' ? JSON.parse(existingImages) : existingImages;
+      } catch (e) {
+        // Si pas d'images existantes, parser depuis la base
+        if (existing.images) {
           try {
-            await cloudinary.uploader.destroy(`footsociety/blog/${publicId}`);
-          } catch (deleteError) {
-            console.warn('Could not delete old image:', deleteError);
+            imagesArray = JSON.parse(existing.images);
+          } catch (e2) {
+            imagesArray = [];
           }
         }
-
-        const uploadResult = await new Promise((resolve, reject) => {
-          const uploadStream = cloudinary.uploader.upload_stream(
-            { folder: 'footsociety/blog' },
-            (error, result) => {
-              if (error) reject(error);
-              else resolve(result);
-            }
-          );
-          uploadStream.end(req.file.buffer);
-        });
-        imageUrl = uploadResult.secure_url;
-      } catch (uploadError) {
-        console.error('Cloudinary upload error:', uploadError);
-        return res.status(500).json({ error: 'Failed to upload image' });
+      }
+    } else if (existing.images) {
+      try {
+        imagesArray = JSON.parse(existing.images);
+      } catch (e) {
+        imagesArray = [];
       }
     }
+
+    // Upload nouvelles images to Cloudinary if provided
+    if (req.files && req.files.length > 0) {
+      try {
+        for (const file of req.files) {
+          const uploadResult = await new Promise((resolve, reject) => {
+            const uploadStream = cloudinary.uploader.upload_stream(
+              { folder: 'footsociety/blog' },
+              (error, result) => {
+                if (error) reject(error);
+                else resolve(result);
+              }
+            );
+            uploadStream.end(file.buffer);
+          });
+          imagesArray.push(uploadResult.secure_url);
+        }
+        // La première image est l'image principale
+        imageUrl = imagesArray[0] || existing.image_url;
+      } catch (uploadError) {
+        console.error('Cloudinary upload error:', uploadError);
+        return res.status(500).json({ error: 'Failed to upload images' });
+      }
+    }
+
+    const imagesJson = imagesArray.length > 0 ? JSON.stringify(imagesArray) : null;
 
     // L'auteur n'est plus modifiable, il reste lié au créateur original via created_by
     await dbRun(
       `UPDATE blog_articles 
-       SET title = ?, excerpt = ?, content = ?, category = ?, image_url = ?, 
+       SET title = ?, excerpt = ?, content = ?, category = ?, image_url = ?, images = ?,
            featured = ?, read_time = ?, published = ?, updated_at = CURRENT_TIMESTAMP
        WHERE id = ?`,
       [
@@ -274,6 +308,7 @@ router.put('/:id', authenticateToken, upload.single('image'), async (req, res) =
         content !== undefined ? content : existing.content,
         category !== undefined ? category : existing.category,
         imageUrl,
+        imagesJson !== null ? imagesJson : existing.images,
         featured !== undefined ? (featured === 'true' || featured === true ? 1 : 0) : existing.featured,
         read_time !== undefined ? read_time : existing.read_time,
         published !== undefined ? (published === 'true' || published === true ? 1 : 0) : existing.published,
@@ -281,7 +316,26 @@ router.put('/:id', authenticateToken, upload.single('image'), async (req, res) =
       ]
     );
 
-    const updatedArticle = await dbGet('SELECT * FROM blog_articles WHERE id = ?', [req.params.id]);
+    const updatedArticle = await dbGet(`
+      SELECT 
+        ba.*,
+        COALESCE(a.username, ba.author) as author
+      FROM blog_articles ba
+      LEFT JOIN admins a ON ba.created_by = a.id
+      WHERE ba.id = ?
+    `, [req.params.id]);
+    
+    // Parser les images si elles existent
+    if (updatedArticle.images) {
+      try {
+        updatedArticle.images = JSON.parse(updatedArticle.images);
+      } catch (e) {
+        updatedArticle.images = [];
+      }
+    } else {
+      updatedArticle.images = [];
+    }
+    
     res.json(updatedArticle);
   } catch (error) {
     console.error('Error updating blog article:', error);
