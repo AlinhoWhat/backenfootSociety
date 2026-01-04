@@ -1,5 +1,5 @@
 const bcrypt = require('bcryptjs');
-const { dbRun, dbGet } = require('../database');
+const { Admin, connectDB } = require('../database');
 
 async function initAdmin() {
   const readline = require('readline').createInterface({
@@ -10,6 +10,7 @@ async function initAdmin() {
   const question = (query) => new Promise(resolve => readline.question(query, resolve));
 
   try {
+    await connectDB();
     console.log('=== Initialisation d\'un compte admin ===\n');
     
     const username = await question('Nom d\'utilisateur: ');
@@ -18,8 +19,7 @@ async function initAdmin() {
       process.exit(1);
     }
 
-    // Vérifier si l'utilisateur existe déjà
-    const existing = await dbGet('SELECT * FROM admins WHERE username = ?', [username]);
+    const existing = await Admin.findOne({ username });
     if (existing) {
       console.error('Cet utilisateur existe déjà');
       process.exit(1);
@@ -27,7 +27,6 @@ async function initAdmin() {
 
     const email = await question('Email (optionnel, pour réinitialisation de mot de passe): ');
     
-    // Valider l'email si fourni
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       console.error('Format d\'email invalide');
       process.exit(1);
@@ -39,17 +38,16 @@ async function initAdmin() {
       process.exit(1);
     }
 
-    // Vérifier s'il existe déjà un super admin
-    const existingSuperAdmin = await dbGet('SELECT * FROM admins WHERE is_super_admin = 1');
+    const existingSuperAdmin = await Admin.findOne({ is_super_admin: true });
     const isSuperAdmin = !existingSuperAdmin; // Premier admin = super admin
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    await dbRun('INSERT INTO admins (username, email, password, is_super_admin) VALUES (?, ?, ?, ?)', [
-      username, 
-      email || null, 
-      hashedPassword, 
-      isSuperAdmin ? 1 : 0
-    ]);
+    await Admin.create({
+      username,
+      email: email || null,
+      password: hashedPassword,
+      is_super_admin: isSuperAdmin
+    });
 
     console.log('\n✅ Compte admin créé avec succès!');
     console.log(`Nom d'utilisateur: ${username}`);
@@ -62,10 +60,8 @@ async function initAdmin() {
     process.exit(1);
   } finally {
     readline.close();
+    process.exit(0);
   }
 }
 
 initAdmin();
-
-
-

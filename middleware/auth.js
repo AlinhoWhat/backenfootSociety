@@ -22,8 +22,9 @@ const authenticateToken = (req, res, next) => {
 // Middleware pour vérifier si l'utilisateur est super admin
 const requireSuperAdmin = async (req, res, next) => {
   try {
-    const { dbGet } = require('../database');
-    const admin = await dbGet('SELECT is_super_admin FROM admins WHERE id = ?', [req.user.id]);
+    const { Admin, connectDB } = require('../database');
+    await connectDB();
+    const admin = await Admin.findById(req.user.id);
     
     if (!admin || !admin.is_super_admin) {
       return res.status(403).json({ error: 'Super administrator access required' });

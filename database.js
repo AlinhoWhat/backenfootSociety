@@ -1,141 +1,126 @@
-const sqlite3 = require('sqlite3').verbose();
-const path = require('path');
+const mongoose = require('mongoose');
 
-const dbPath = path.join(__dirname, 'database.sqlite');
-const db = new sqlite3.Database(dbPath);
+// URL de connexion MongoDB depuis les variables d'environnement
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/footsociety';
 
-// Initialiser les tables
-db.serialize(() => {
-  // Table pour les articles de blog
-  db.run(`
-    CREATE TABLE IF NOT EXISTS blog_articles (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      title TEXT NOT NULL,
-      excerpt TEXT,
-      content TEXT,
-      author TEXT,
-      category TEXT,
-      image_url TEXT,
-      images TEXT,
-      featured INTEGER DEFAULT 0,
-      read_time TEXT,
-      published INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  
-  // Ajouter la colonne images si elle n'existe pas
-  db.run(`ALTER TABLE blog_articles ADD COLUMN images TEXT`, (err) => {
-    // Ignorer l'erreur si la colonne existe déjà
-  });
+// Options de connexion
+const mongooseOptions = {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+};
 
-  // Ajouter la colonne created_by si elle n'existe pas
-  db.run(`ALTER TABLE blog_articles ADD COLUMN created_by INTEGER`, (err) => {
-    // Ignorer l'erreur si la colonne existe déjà
-  });
+// Connexion à MongoDB
+let isConnected = false;
 
-  // Table pour les réalisations (portfolio)
-  db.run(`
-    CREATE TABLE IF NOT EXISTS portfolio_items (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      title TEXT NOT NULL,
-      description TEXT,
-      content TEXT,
-      category TEXT,
-      image_url TEXT,
-      images TEXT,
-      tags TEXT,
-      stats TEXT,
-      featured INTEGER DEFAULT 0,
-      published INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  
-  // Ajouter la colonne images si elle n'existe pas
-  db.run(`ALTER TABLE portfolio_items ADD COLUMN images TEXT`, (err) => {
-    // Ignorer l'erreur si la colonne existe déjà
-  });
-  
-  // Ajouter la colonne content si elle n'existe pas
-  db.run(`ALTER TABLE portfolio_items ADD COLUMN content TEXT`, (err) => {
-    // Ignorer l'erreur si la colonne existe déjà
-  });
+const connectDB = async () => {
+  if (isConnected) {
+    console.log('MongoDB déjà connecté');
+    return;
+  }
 
-  // Ajouter la colonne created_by si elle n'existe pas
-  db.run(`ALTER TABLE portfolio_items ADD COLUMN created_by INTEGER`, (err) => {
-    // Ignorer l'erreur si la colonne existe déjà
-  });
+  try {
+    await mongoose.connect(MONGODB_URI, mongooseOptions);
+    isConnected = true;
+    console.log('✅ MongoDB connecté avec succès');
+  } catch (error) {
+    console.error('❌ Erreur de connexion MongoDB:', error.message);
+    process.exit(1);
+  }
+};
 
-  // Table pour les admins
-  db.run(`
-    CREATE TABLE IF NOT EXISTS admins (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      username TEXT UNIQUE NOT NULL,
-      email TEXT,
-      password TEXT NOT NULL,
-      is_super_admin INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-
-  // Ajouter la colonne email si elle n'existe pas
-  db.run(`ALTER TABLE admins ADD COLUMN email TEXT`, (err) => {
-    // Ignorer l'erreur si la colonne existe déjà
-  });
-
-  // Ajouter la colonne is_super_admin si elle n'existe pas
-  db.run(`ALTER TABLE admins ADD COLUMN is_super_admin INTEGER DEFAULT 0`, (err) => {
-    // Ignorer l'erreur si la colonne existe déjà
-  });
-
-  // Table pour les tokens de réinitialisation de mot de passe
-  db.run(`
-    CREATE TABLE IF NOT EXISTS password_reset_tokens (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      admin_id INTEGER NOT NULL,
-      token TEXT UNIQUE NOT NULL,
-      expires_at DATETIME NOT NULL,
-      used INTEGER DEFAULT 0,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (admin_id) REFERENCES admins(id) ON DELETE CASCADE
-    )
-  `);
-
-  console.log('Database tables initialized');
+// Gestion de la déconnexion
+mongoose.connection.on('disconnected', () => {
+  console.log('MongoDB déconnecté');
+  isConnected = false;
 });
 
-// Helper functions
-const dbRun = (sql, params = []) => {
-  return new Promise((resolve, reject) => {
-    db.run(sql, params, function(err) {
-      if (err) reject(err);
-      else resolve({ id: this.lastID, changes: this.changes });
-    });
-  });
+mongoose.connection.on('error', (err) => {
+  console.error('Erreur MongoDB:', err);
+});
+
+// Modèles Mongoose
+
+// Schéma pour les articles de blog
+const blogArticleSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  excerpt: String,
+  content: String,
+  author: String,
+  category: String,
+  image_url: String,
+  images: [String], // Array de strings pour les images
+  featured: { type: Boolean, default: false },
+  read_time: String,
+  published: { type: Boolean, default: false },
+  created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+  created_at: { type: Date, default: Date.now },
+  updated_at: { type: Date, default: Date.now }
+});
+
+// Middleware pour mettre à jour updated_at avant save
+blogArticleSchema.pre('save', function(next) {
+  this.updated_at = Date.now();
+  next();
+});
+
+// Schéma pour les réalisations portfolio
+const portfolioItemSchema = new mongoose.Schema({
+  title: { type: String, required: true },
+  description: String,
+  content: String,
+  category: String,
+  image_url: String,
+  images: [String], // Array de strings pour les images
+  tags: [String], // Array de strings pour les tags
+  stats: String,
+  featured: { type: Boolean, default: false },
+  published: { type: Boolean, default: false },
+  created_by: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin' },
+  created_at: { type: Date, default: Date.now },
+  updated_at: { type: Date, default: Date.now }
+});
+
+// Middleware pour mettre à jour updated_at avant save
+portfolioItemSchema.pre('save', function(next) {
+  this.updated_at = Date.now();
+  next();
+});
+
+// Schéma pour les admins
+const adminSchema = new mongoose.Schema({
+  username: { type: String, required: true, unique: true },
+  email: String,
+  password: { type: String, required: true },
+  is_super_admin: { type: Boolean, default: false },
+  created_at: { type: Date, default: Date.now }
+});
+
+// Schéma pour les tokens de réinitialisation de mot de passe
+const passwordResetTokenSchema = new mongoose.Schema({
+  admin_id: { type: mongoose.Schema.Types.ObjectId, ref: 'Admin', required: true },
+  token: { type: String, required: true, unique: true },
+  expires_at: { type: Date, required: true },
+  used: { type: Boolean, default: false },
+  created_at: { type: Date, default: Date.now }
+});
+
+// Index pour améliorer les performances
+passwordResetTokenSchema.index({ expires_at: 1 }, { expireAfterSeconds: 0 });
+
+// Créer les modèles
+const BlogArticle = mongoose.model('BlogArticle', blogArticleSchema);
+const PortfolioItem = mongoose.model('PortfolioItem', portfolioItemSchema);
+const Admin = mongoose.model('Admin', adminSchema);
+const PasswordResetToken = mongoose.model('PasswordResetToken', passwordResetTokenSchema);
+
+// Initialiser la connexion au démarrage
+connectDB();
+
+module.exports = {
+  connectDB,
+  BlogArticle,
+  PortfolioItem,
+  Admin,
+  PasswordResetToken,
+  mongoose
 };
-
-const dbGet = (sql, params = []) => {
-  return new Promise((resolve, reject) => {
-    db.get(sql, params, (err, row) => {
-      if (err) reject(err);
-      else resolve(row);
-    });
-  });
-};
-
-const dbAll = (sql, params = []) => {
-  return new Promise((resolve, reject) => {
-    db.all(sql, params, (err, rows) => {
-      if (err) reject(err);
-      else resolve(rows);
-    });
-  });
-};
-
-module.exports = { db, dbRun, dbGet, dbAll };
-
-
-

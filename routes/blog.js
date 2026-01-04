@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { dbGet, dbAll, dbRun } = require('../database');
+const { BlogArticle, Admin, connectDB } = require('../database');
 const { authenticateToken } = require('../middleware/auth');
 const cloudinary = require('cloudinary').v2;
 const multer = require('multer');
@@ -21,14 +21,24 @@ const upload = multer({
 // GET /api/blog - Récupérer tous les articles (public)
 router.get('/', async (req, res) => {
   try {
+    await connectDB();
     const { featured, published } = req.query;
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
     
-    // Si authentifié, inclure les infos de l'admin créateur
-    let sql;
-    let includeCreator = false;
+    // Construire la requête
+    const query = {};
     
+    if (published === 'true') {
+      query.published = true;
+    }
+    
+    if (featured === 'true') {
+      query.featured = true;
+    }
+    
+    // Déterminer si on doit inclure les infos du créateur
+    let includeCreator = false;
     if (token) {
       try {
         const jwt = require('jsonwebtoken');
@@ -36,61 +46,51 @@ router.get('/', async (req, res) => {
         jwt.verify(token, JWT_SECRET);
         includeCreator = true;
       } catch (err) {
-        // Token invalide ou expiré, continuer sans infos créateur
+        // Token invalide ou expiré
       }
     }
     
-    // Toujours utiliser le JOIN pour récupérer l'auteur dynamique depuis l'admin
-    sql = `SELECT 
-      ba.*,
-      COALESCE(a.username, ba.author) as author`;
-    
+    // Récupérer les articles avec populate si nécessaire
+    let articles;
     if (includeCreator) {
-      sql += `,
-      a.username as created_by_username,
-      a.id as created_by_id`;
+      articles = await BlogArticle.find(query)
+        .populate('created_by', 'username')
+        .sort({ created_at: -1 })
+        .lean();
+    } else {
+      articles = await BlogArticle.find(query)
+        .sort({ created_at: -1 })
+        .lean();
     }
     
-    sql += `
-      FROM blog_articles ba
-      LEFT JOIN admins a ON ba.created_by = a.id
-      WHERE 1=1`;
-    
-    const params = [];
-
-    // Si on demande seulement les publiés (pour le frontend)
-    if (published === 'true') {
-      sql += ' AND published = 1';
-    }
-
-    // Si on demande seulement les vedettes
-    if (featured === 'true') {
-      sql += ' AND featured = 1';
-    }
-
-    sql += ' ORDER BY created_at DESC';
-
-    const articles = await dbAll(sql, params);
-    
-    // Parser les images pour chaque article
-    const articlesWithParsedImages = Array.isArray(articles) ? articles.map(article => {
-      // Parser les images si elles existent
-      if (article.images) {
-        try {
-          article.images = JSON.parse(article.images);
-        } catch (e) {
-          article.images = [];
-        }
-      } else {
-        article.images = [];
+    // Formater les articles pour correspondre à l'ancien format
+    const formattedArticles = articles.map(article => {
+      const formatted = {
+        ...article,
+        id: article._id.toString(),
+        author: article.created_by?.username || article.author || 'Admin',
+        images: article.images || [],
+        featured: article.featured ? 1 : 0,
+        published: article.published ? 1 : 0
+      };
+      
+      if (includeCreator && article.created_by) {
+        formatted.created_by_username = article.created_by.username;
+        formatted.created_by_id = article.created_by._id.toString();
       }
-      return article;
-    }) : [];
+      
+      delete formatted._id;
+      delete formatted.__v;
+      if (formatted.created_by && typeof formatted.created_by === 'object') {
+        delete formatted.created_by;
+      }
+      
+      return formatted;
+    });
     
-    res.json(articlesWithParsedImages);
+    res.json(formattedArticles);
   } catch (error) {
     console.error('Error fetching blog articles:', error);
-    // Retourner un tableau vide au lieu d'un objet d'erreur
     res.status(500).json([]);
   }
 });
@@ -98,6 +98,7 @@ router.get('/', async (req, res) => {
 // GET /api/blog/:id - Récupérer un article spécifique
 router.get('/:id', async (req, res) => {
   try {
+    await connectDB();
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
     let includeCreator = false;
@@ -109,47 +110,45 @@ router.get('/:id', async (req, res) => {
         jwt.verify(token, JWT_SECRET);
         includeCreator = true;
       } catch (err) {
-        // Token invalide ou expiré, continuer sans infos créateur
+        // Token invalide ou expiré
       }
     }
     
     let article;
     if (includeCreator) {
-      article = await dbGet(`
-        SELECT 
-          ba.*,
-          COALESCE(a.username, ba.author) as author,
-          a.username as created_by_username,
-          a.id as created_by_id
-        FROM blog_articles ba
-        LEFT JOIN admins a ON ba.created_by = a.id
-        WHERE ba.id = ?
-      `, [req.params.id]);
+      article = await BlogArticle.findById(req.params.id)
+        .populate('created_by', 'username')
+        .lean();
     } else {
-      article = await dbGet(`
-        SELECT 
-          ba.*,
-          COALESCE(a.username, ba.author) as author
-        FROM blog_articles ba
-        LEFT JOIN admins a ON ba.created_by = a.id
-        WHERE ba.id = ?
-      `, [req.params.id]);
+      article = await BlogArticle.findById(req.params.id).lean();
     }
     
     if (!article) {
       return res.status(404).json({ error: 'Article not found' });
     }
-    // Parser les images si elles existent
-    if (article.images) {
-      try {
-        article.images = JSON.parse(article.images);
-      } catch (e) {
-        article.images = [];
-      }
-    } else {
-      article.images = [];
+    
+    // Formater l'article
+    const formatted = {
+      ...article,
+      id: article._id.toString(),
+      author: article.created_by?.username || article.author || 'Admin',
+      images: article.images || [],
+      featured: article.featured ? 1 : 0,
+      published: article.published ? 1 : 0
+    };
+    
+    if (includeCreator && article.created_by) {
+      formatted.created_by_username = article.created_by.username;
+      formatted.created_by_id = article.created_by._id.toString();
     }
-    res.json(article);
+    
+    delete formatted._id;
+    delete formatted.__v;
+    if (formatted.created_by && typeof formatted.created_by === 'object') {
+      delete formatted.created_by;
+    }
+    
+    res.json(formatted);
   } catch (error) {
     console.error('Error fetching blog article:', error);
     res.status(500).json({ error: 'Failed to fetch blog article' });
@@ -159,14 +158,15 @@ router.get('/:id', async (req, res) => {
 // POST /api/blog - Créer un nouvel article (admin only)
 router.post('/', authenticateToken, upload.array('images', 5), async (req, res) => {
   try {
+    await connectDB();
     const { title, excerpt, content, category, featured, read_time, published } = req.body;
     
     if (!title) {
       return res.status(400).json({ error: 'Title is required' });
     }
 
-    // Récupérer le nom d'utilisateur de l'admin connecté pour l'auteur
-    const admin = await dbGet('SELECT username FROM admins WHERE id = ?', [req.user.id]);
+    // Récupérer l'admin connecté
+    const admin = await Admin.findById(req.user.id);
     const author = admin ? admin.username : req.user.username;
 
     let imageUrl = null;
@@ -175,7 +175,6 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
     // Upload images to Cloudinary if provided
     if (req.files && req.files.length > 0) {
       try {
-        // Upload toutes les images
         for (const file of req.files) {
           const uploadResult = await new Promise((resolve, reject) => {
             const uploadStream = cloudinary.uploader.upload_stream(
@@ -189,7 +188,6 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
           });
           imagesArray.push(uploadResult.secure_url);
         }
-        // La première image est l'image principale
         imageUrl = imagesArray[0] || null;
       } catch (uploadError) {
         console.error('Cloudinary upload error:', uploadError);
@@ -197,37 +195,47 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
       }
     }
 
-    const imagesJson = imagesArray.length > 0 ? JSON.stringify(imagesArray) : null;
+    // Créer l'article
+    const newArticle = new BlogArticle({
+      title,
+      excerpt: excerpt || null,
+      content: content || null,
+      author,
+      category: category || null,
+      image_url: imageUrl,
+      images: imagesArray,
+      featured: featured === 'true' || featured === true,
+      read_time: read_time || null,
+      published: published === 'true' || published === true,
+      created_by: req.user.id
+    });
 
-    const result = await dbRun(
-      `INSERT INTO blog_articles (title, excerpt, content, author, category, image_url, images, featured, read_time, published, created_by, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-      [
-        title,
-        excerpt || null,
-        content || null,
-        author, // Utiliser le nom d'utilisateur de l'admin connecté
-        category || null,
-        imageUrl,
-        imagesJson,
-        featured === 'true' || featured === true ? 1 : 0,
-        read_time || null,
-        published === 'true' || published === true ? 1 : 0,
-        req.user.id // ID de l'admin qui crée l'article
-      ]
-    );
-
-    const newArticle = await dbGet(`
-      SELECT 
-        ba.*,
-        COALESCE(a.username, ba.author) as author,
-        a.username as created_by_username,
-        a.id as created_by_id
-      FROM blog_articles ba
-      LEFT JOIN admins a ON ba.created_by = a.id
-      WHERE ba.id = ?
-    `, [result.id]);
-    res.status(201).json(newArticle);
+    await newArticle.save();
+    
+    // Récupérer l'article avec populate
+    const article = await BlogArticle.findById(newArticle._id)
+      .populate('created_by', 'username')
+      .lean();
+    
+    // Formater la réponse
+    const formatted = {
+      ...article,
+      id: article._id.toString(),
+      author: article.created_by?.username || article.author || 'Admin',
+      images: article.images || [],
+      featured: article.featured ? 1 : 0,
+      published: article.published ? 1 : 0,
+      created_by_username: article.created_by?.username,
+      created_by_id: article.created_by?._id.toString()
+    };
+    
+    delete formatted._id;
+    delete formatted.__v;
+    if (formatted.created_by && typeof formatted.created_by === 'object') {
+      delete formatted.created_by;
+    }
+    
+    res.status(201).json(formatted);
   } catch (error) {
     console.error('Error creating blog article:', error);
     res.status(500).json({ error: 'Failed to create blog article' });
@@ -237,36 +245,23 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
 // PUT /api/blog/:id - Mettre à jour un article (admin only)
 router.put('/:id', authenticateToken, upload.array('images', 5), async (req, res) => {
   try {
+    await connectDB();
     const { title, excerpt, content, category, featured, read_time, published, existingImages } = req.body;
-    // L'auteur n'est plus modifiable, il reste lié au créateur original
     
-    const existing = await dbGet('SELECT * FROM blog_articles WHERE id = ?', [req.params.id]);
+    const existing = await BlogArticle.findById(req.params.id);
     if (!existing) {
       return res.status(404).json({ error: 'Article not found' });
     }
 
     let imageUrl = existing.image_url;
-    let imagesArray = [];
+    let imagesArray = existing.images || [];
 
     // Gérer les images existantes
     if (existingImages) {
       try {
         imagesArray = typeof existingImages === 'string' ? JSON.parse(existingImages) : existingImages;
       } catch (e) {
-        // Si pas d'images existantes, parser depuis la base
-        if (existing.images) {
-          try {
-            imagesArray = JSON.parse(existing.images);
-          } catch (e2) {
-            imagesArray = [];
-          }
-        }
-      }
-    } else if (existing.images) {
-      try {
-        imagesArray = JSON.parse(existing.images);
-      } catch (e) {
-        imagesArray = [];
+        imagesArray = existing.images || [];
       }
     }
 
@@ -286,7 +281,6 @@ router.put('/:id', authenticateToken, upload.array('images', 5), async (req, res
           });
           imagesArray.push(uploadResult.secure_url);
         }
-        // La première image est l'image principale
         imageUrl = imagesArray[0] || existing.image_url;
       } catch (uploadError) {
         console.error('Cloudinary upload error:', uploadError);
@@ -294,49 +288,42 @@ router.put('/:id', authenticateToken, upload.array('images', 5), async (req, res
       }
     }
 
-    const imagesJson = imagesArray.length > 0 ? JSON.stringify(imagesArray) : null;
+    // Mettre à jour l'article
+    existing.title = title || existing.title;
+    existing.excerpt = excerpt !== undefined ? excerpt : existing.excerpt;
+    existing.content = content !== undefined ? content : existing.content;
+    existing.category = category !== undefined ? category : existing.category;
+    existing.image_url = imageUrl;
+    existing.images = imagesArray;
+    existing.featured = featured !== undefined ? (featured === 'true' || featured === true) : existing.featured;
+    existing.read_time = read_time !== undefined ? read_time : existing.read_time;
+    existing.published = published !== undefined ? (published === 'true' || published === true) : existing.published;
+    existing.updated_at = new Date();
 
-    // L'auteur n'est plus modifiable, il reste lié au créateur original via created_by
-    await dbRun(
-      `UPDATE blog_articles 
-       SET title = ?, excerpt = ?, content = ?, category = ?, image_url = ?, images = ?,
-           featured = ?, read_time = ?, published = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-      [
-        title || existing.title,
-        excerpt !== undefined ? excerpt : existing.excerpt,
-        content !== undefined ? content : existing.content,
-        category !== undefined ? category : existing.category,
-        imageUrl,
-        imagesJson !== null ? imagesJson : existing.images,
-        featured !== undefined ? (featured === 'true' || featured === true ? 1 : 0) : existing.featured,
-        read_time !== undefined ? read_time : existing.read_time,
-        published !== undefined ? (published === 'true' || published === true ? 1 : 0) : existing.published,
-        req.params.id
-      ]
-    );
-
-    const updatedArticle = await dbGet(`
-      SELECT 
-        ba.*,
-        COALESCE(a.username, ba.author) as author
-      FROM blog_articles ba
-      LEFT JOIN admins a ON ba.created_by = a.id
-      WHERE ba.id = ?
-    `, [req.params.id]);
+    await existing.save();
     
-    // Parser les images si elles existent
-    if (updatedArticle.images) {
-      try {
-        updatedArticle.images = JSON.parse(updatedArticle.images);
-      } catch (e) {
-        updatedArticle.images = [];
-      }
-    } else {
-      updatedArticle.images = [];
+    // Récupérer l'article mis à jour avec populate
+    const updatedArticle = await BlogArticle.findById(req.params.id)
+      .populate('created_by', 'username')
+      .lean();
+    
+    // Formater la réponse
+    const formatted = {
+      ...updatedArticle,
+      id: updatedArticle._id.toString(),
+      author: updatedArticle.created_by?.username || updatedArticle.author || 'Admin',
+      images: updatedArticle.images || [],
+      featured: updatedArticle.featured ? 1 : 0,
+      published: updatedArticle.published ? 1 : 0
+    };
+    
+    delete formatted._id;
+    delete formatted.__v;
+    if (formatted.created_by && typeof formatted.created_by === 'object') {
+      delete formatted.created_by;
     }
     
-    res.json(updatedArticle);
+    res.json(formatted);
   } catch (error) {
     console.error('Error updating blog article:', error);
     res.status(500).json({ error: 'Failed to update blog article' });
@@ -346,7 +333,8 @@ router.put('/:id', authenticateToken, upload.array('images', 5), async (req, res
 // DELETE /api/blog/:id - Supprimer un article (admin only)
 router.delete('/:id', authenticateToken, async (req, res) => {
   try {
-    const article = await dbGet('SELECT * FROM blog_articles WHERE id = ?', [req.params.id]);
+    await connectDB();
+    const article = await BlogArticle.findById(req.params.id);
     if (!article) {
       return res.status(404).json({ error: 'Article not found' });
     }
@@ -361,7 +349,7 @@ router.delete('/:id', authenticateToken, async (req, res) => {
       }
     }
 
-    await dbRun('DELETE FROM blog_articles WHERE id = ?', [req.params.id]);
+    await BlogArticle.findByIdAndDelete(req.params.id);
     res.json({ message: 'Article deleted successfully' });
   } catch (error) {
     console.error('Error deleting blog article:', error);
@@ -370,4 +358,3 @@ router.delete('/:id', authenticateToken, async (req, res) => {
 });
 
 module.exports = router;
-

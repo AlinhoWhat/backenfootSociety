@@ -8,7 +8,7 @@ Backend Express avec API REST pour la gestion du contenu (blog et portfolio) ave
 - ✅ API REST pour les réalisations portfolio (CRUD)
 - ✅ Authentification admin avec JWT
 - ✅ Upload d'images via Cloudinary
-- ✅ Base de données SQLite
+- ✅ Base de données MongoDB avec Mongoose
 - ✅ Système de publication (publié/brouillon)
 - ✅ Système d'articles vedettes (featured)
 
@@ -23,6 +23,13 @@ npm install
 ```env
 PORT=4000
 JWT_SECRET=your-super-secret-jwt-key-change-in-production
+
+# MongoDB Connection String
+# Pour MongoDB local :
+MONGODB_URI=mongodb://localhost:27017/footsociety
+# Pour MongoDB Atlas (cloud) :
+# MONGODB_URI=mongodb+srv://username:password@cluster.mongodb.net/footsociety?retryWrites=true&w=majority
+
 CLOUDINARY_CLOUD_NAME=your-cloud-name
 CLOUDINARY_API_KEY=your-api-key
 CLOUDINARY_API_SECRET=your-api-secret

@@ -3,12 +3,13 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const { dbGet, dbRun, dbAll } = require('../database');
+const { Admin, PasswordResetToken, connectDB } = require('../database');
 const { JWT_SECRET, authenticateToken, requireSuperAdmin } = require('../middleware/auth');
 
 // POST /api/auth/login - Connexion admin
 router.post('/login', async (req, res) => {
   try {
+    await connectDB();
     const { username, password } = req.body;
 
     if (!username || !password) {
@@ -20,7 +21,7 @@ router.post('/login', async (req, res) => {
       return res.status(500).json({ error: 'Server configuration error' });
     }
 
-    const admin = await dbGet('SELECT * FROM admins WHERE username = ?', [username]);
+    const admin = await Admin.findOne({ username });
     if (!admin) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -31,7 +32,7 @@ router.post('/login', async (req, res) => {
     }
 
     const token = jwt.sign(
-      { id: admin.id, username: admin.username, is_super_admin: admin.is_super_admin || 0 },
+      { id: admin._id.toString(), username: admin.username, is_super_admin: admin.is_super_admin || false },
       JWT_SECRET,
       { expiresIn: '7d' }
     );
@@ -39,11 +40,10 @@ router.post('/login', async (req, res) => {
     res.json({ 
       token, 
       username: admin.username,
-      is_super_admin: admin.is_super_admin || 0
+      is_super_admin: admin.is_super_admin ? 1 : 0
     });
   } catch (error) {
     console.error('Error during login:', error);
-    // S'assurer de toujours retourner du JSON
     if (!res.headersSent) {
       res.status(500).json({ 
         error: 'Failed to login',
@@ -56,8 +56,20 @@ router.post('/login', async (req, res) => {
 // GET /api/auth/admins - Lister tous les admins (super admin only)
 router.get('/admins', authenticateToken, requireSuperAdmin, async (req, res) => {
   try {
-    const admins = await dbAll('SELECT id, username, email, is_super_admin, created_at FROM admins ORDER BY created_at DESC');
-    res.json(admins);
+    await connectDB();
+    const admins = await Admin.find({}, 'username email is_super_admin created_at')
+      .sort({ created_at: -1 })
+      .lean();
+    
+    const formatted = admins.map(admin => ({
+      id: admin._id.toString(),
+      username: admin.username,
+      email: admin.email,
+      is_super_admin: admin.is_super_admin ? 1 : 0,
+      created_at: admin.created_at
+    }));
+    
+    res.json(formatted);
   } catch (error) {
     console.error('Error fetching admins:', error);
     res.status(500).json({ error: 'Failed to fetch admins' });
@@ -67,6 +79,7 @@ router.get('/admins', authenticateToken, requireSuperAdmin, async (req, res) => 
 // POST /api/auth/admins - Créer un nouveau compte admin (super admin only)
 router.post('/admins', authenticateToken, requireSuperAdmin, async (req, res) => {
   try {
+    await connectDB();
     const { username, email, password } = req.body;
 
     if (!username || !password) {
@@ -77,27 +90,28 @@ router.post('/admins', authenticateToken, requireSuperAdmin, async (req, res) =>
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
-    // Valider l'email si fourni
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ error: 'Invalid email format' });
     }
 
-    // Vérifier si l'utilisateur existe déjà
-    const existing = await dbGet('SELECT * FROM admins WHERE username = ?', [username]);
+    const existing = await Admin.findOne({ username });
     if (existing) {
       return res.status(400).json({ error: 'Username already exists' });
     }
 
-    // Vérifier si l'email existe déjà (si fourni)
     if (email) {
-      const existingEmail = await dbGet('SELECT * FROM admins WHERE email = ?', [email]);
+      const existingEmail = await Admin.findOne({ email });
       if (existingEmail) {
         return res.status(400).json({ error: 'Email already exists' });
       }
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    await dbRun('INSERT INTO admins (username, email, password) VALUES (?, ?, ?)', [username, email || null, hashedPassword]);
+    await Admin.create({
+      username,
+      email: email || null,
+      password: hashedPassword
+    });
 
     res.status(201).json({ message: 'Admin created successfully' });
   } catch (error) {
@@ -109,7 +123,8 @@ router.post('/admins', authenticateToken, requireSuperAdmin, async (req, res) =>
 // PUT /api/auth/admins/:id - Mettre à jour un admin
 router.put('/admins/:id', authenticateToken, async (req, res) => {
   try {
-    const adminId = parseInt(req.params.id);
+    await connectDB();
+    const adminId = req.params.id;
     const currentAdminId = req.user.id;
     const { username, email, password } = req.body;
 
@@ -117,59 +132,47 @@ router.put('/admins/:id', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'Username is required' });
     }
 
-    // Valider l'email si fourni
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ error: 'Invalid email format' });
     }
 
-    // Vérifier si l'admin existe
-    const admin = await dbGet('SELECT * FROM admins WHERE id = ?', [adminId]);
+    const admin = await Admin.findById(adminId);
     if (!admin) {
       return res.status(404).json({ error: 'Admin not found' });
     }
 
-    // Vérifier les permissions : super admin peut modifier n'importe qui, sinon seulement soi-même
-    const currentAdmin = await dbGet('SELECT is_super_admin FROM admins WHERE id = ?', [currentAdminId]);
+    const currentAdmin = await Admin.findById(currentAdminId);
     const isSuperAdmin = currentAdmin && currentAdmin.is_super_admin;
     
     if (!isSuperAdmin && adminId !== currentAdminId) {
       return res.status(403).json({ error: 'You can only modify your own account' });
     }
 
-    // Vérifier si le nouveau username existe déjà (sauf pour l'admin actuel)
     if (username !== admin.username) {
-      const existing = await dbGet('SELECT * FROM admins WHERE username = ? AND id != ?', [username, adminId]);
+      const existing = await Admin.findOne({ username, _id: { $ne: adminId } });
       if (existing) {
         return res.status(400).json({ error: 'Username already exists' });
       }
     }
 
-    // Vérifier si le nouvel email existe déjà (sauf pour l'admin actuel, si fourni)
     if (email && email !== admin.email) {
-      const existingEmail = await dbGet('SELECT * FROM admins WHERE email = ? AND id != ?', [email, adminId]);
+      const existingEmail = await Admin.findOne({ email, _id: { $ne: adminId } });
       if (existingEmail) {
         return res.status(400).json({ error: 'Email already exists' });
       }
     }
 
-    // Si un nouveau mot de passe est fourni, le hasher
+    admin.username = username;
+    admin.email = email || null;
+    
     if (password) {
       if (password.length < 6) {
         return res.status(400).json({ error: 'Password must be at least 6 characters' });
       }
-      const hashedPassword = await bcrypt.hash(password, 10);
-      await dbRun(
-        'UPDATE admins SET username = ?, email = ?, password = ? WHERE id = ?',
-        [username, email || null, hashedPassword, adminId]
-      );
-    } else {
-      // Mettre à jour sans changer le mot de passe
-      await dbRun(
-        'UPDATE admins SET username = ?, email = ? WHERE id = ?',
-        [username, email || null, adminId]
-      );
+      admin.password = await bcrypt.hash(password, 10);
     }
 
+    await admin.save();
     res.json({ message: 'Admin updated successfully' });
   } catch (error) {
     console.error('Error updating admin:', error);
@@ -180,26 +183,24 @@ router.put('/admins/:id', authenticateToken, async (req, res) => {
 // DELETE /api/auth/admins/:id - Supprimer un admin (super admin only)
 router.delete('/admins/:id', authenticateToken, requireSuperAdmin, async (req, res) => {
   try {
-    const adminId = parseInt(req.params.id);
+    await connectDB();
+    const adminId = req.params.id;
     const currentAdminId = req.user.id;
 
-    // Empêcher de se supprimer soi-même
     if (adminId === currentAdminId) {
       return res.status(400).json({ error: 'You cannot delete your own account' });
     }
 
-    // Empêcher de supprimer un autre super admin
-    const targetAdmin = await dbGet('SELECT is_super_admin FROM admins WHERE id = ?', [adminId]);
-    if (targetAdmin && targetAdmin.is_super_admin) {
-      return res.status(400).json({ error: 'Cannot delete another super administrator' });
-    }
-
-    const admin = await dbGet('SELECT * FROM admins WHERE id = ?', [adminId]);
-    if (!admin) {
+    const targetAdmin = await Admin.findById(adminId);
+    if (!targetAdmin) {
       return res.status(404).json({ error: 'Admin not found' });
     }
 
-    await dbRun('DELETE FROM admins WHERE id = ?', [adminId]);
+    if (targetAdmin.is_super_admin) {
+      return res.status(400).json({ error: 'Cannot delete another super administrator' });
+    }
+
+    await Admin.findByIdAndDelete(adminId);
     res.json({ message: 'Admin deleted successfully' });
   } catch (error) {
     console.error('Error deleting admin:', error);
@@ -210,50 +211,43 @@ router.delete('/admins/:id', authenticateToken, requireSuperAdmin, async (req, r
 // POST /api/auth/forgot-password - Demander une réinitialisation de mot de passe
 router.post('/forgot-password', async (req, res) => {
   try {
+    await connectDB();
     const { username, email } = req.body;
 
     if (!username && !email) {
       return res.status(400).json({ error: 'Username or email is required' });
     }
 
-    // Chercher par username ou email
     let admin;
     if (email) {
-      admin = await dbGet('SELECT * FROM admins WHERE email = ?', [email]);
+      admin = await Admin.findOne({ email });
     } else {
-      admin = await dbGet('SELECT * FROM admins WHERE username = ?', [username]);
+      admin = await Admin.findOne({ username });
     }
 
     if (!admin) {
-      // Ne pas révéler si l'utilisateur existe ou non (sécurité)
       return res.json({ message: 'If the username or email exists, a password reset email will be sent' });
     }
 
-    // Vérifier que l'admin a un email enregistré
     if (!admin.email) {
       return res.status(400).json({ error: 'No email address registered for this account. Please contact an administrator.' });
     }
 
-    // Générer un token sécurisé
     const resetToken = crypto.randomBytes(32).toString('hex');
     const expiresAt = new Date(Date.now() + 3600000); // 1 heure
 
-    // Supprimer les anciens tokens non utilisés pour cet admin
-    await dbRun('DELETE FROM password_reset_tokens WHERE admin_id = ? AND used = 0', [admin.id]);
+    await PasswordResetToken.deleteMany({ admin_id: admin._id, used: false });
 
-    // Créer le nouveau token
-    await dbRun(
-      'INSERT INTO password_reset_tokens (admin_id, token, expires_at) VALUES (?, ?, ?)',
-      [admin.id, resetToken, expiresAt.toISOString()]
-    );
+    await PasswordResetToken.create({
+      admin_id: admin._id,
+      token: resetToken,
+      expires_at: expiresAt
+    });
 
-    // Construire l'URL de réinitialisation
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:8080';
     const resetUrl = `${frontendUrl}/admin/reset-password?token=${resetToken}`;
 
-    // Envoyer l'email de réinitialisation
     try {
-      // Créer un transporter temporaire pour l'email
       const nodemailer = require('nodemailer');
       const smtpHost = process.env.SMTP_HOST || 'ssl0.ovh.net';
       const smtpPort = Number(process.env.SMTP_PORT) || 465;
@@ -307,12 +301,10 @@ Ce lien expire dans 1 heure.
       }
     } catch (emailError) {
       console.error('Error sending password reset email:', emailError);
-      // Ne pas bloquer la réponse si l'email échoue
     }
 
     res.json({ 
       message: 'If the username or email exists, a password reset email will be sent',
-      // En développement, retourner le lien (à retirer en production)
       resetUrl: process.env.NODE_ENV === 'development' ? resetUrl : undefined
     });
   } catch (error) {
@@ -324,6 +316,7 @@ Ce lien expire dans 1 heure.
 // POST /api/auth/reset-password - Réinitialiser le mot de passe avec un token
 router.post('/reset-password', async (req, res) => {
   try {
+    await connectDB();
     const { token, password } = req.body;
 
     if (!token || !password) {
@@ -334,24 +327,20 @@ router.post('/reset-password', async (req, res) => {
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
-    // Vérifier le token
-    const resetToken = await dbGet(
-      'SELECT * FROM password_reset_tokens WHERE token = ? AND used = 0 AND expires_at > datetime("now")',
-      [token]
-    );
+    const resetToken = await PasswordResetToken.findOne({
+      token,
+      used: false,
+      expires_at: { $gt: new Date() }
+    });
 
     if (!resetToken) {
       return res.status(400).json({ error: 'Invalid or expired token' });
     }
 
-    // Hasher le nouveau mot de passe
     const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Mettre à jour le mot de passe
-    await dbRun('UPDATE admins SET password = ? WHERE id = ?', [hashedPassword, resetToken.admin_id]);
-
-    // Marquer le token comme utilisé
-    await dbRun('UPDATE password_reset_tokens SET used = 1 WHERE id = ?', [resetToken.id]);
+    await Admin.findByIdAndUpdate(resetToken.admin_id, { password: hashedPassword });
+    resetToken.used = true;
+    await resetToken.save();
 
     res.json({ message: 'Password reset successfully' });
   } catch (error) {
@@ -363,16 +352,17 @@ router.post('/reset-password', async (req, res) => {
 // GET /api/auth/me - Vérifier le token (admin only)
 router.get('/me', authenticateToken, async (req, res) => {
   try {
-    const admin = await dbGet('SELECT id, username, email, is_super_admin, created_at FROM admins WHERE id = ?', [req.user.id]);
+    await connectDB();
+    const admin = await Admin.findById(req.user.id, 'username email is_super_admin created_at').lean();
     if (!admin) {
       return res.status(404).json({ error: 'Admin not found' });
     }
 
     res.json({
-      id: admin.id,
+      id: admin._id.toString(),
       username: admin.username,
       email: admin.email,
-      is_super_admin: admin.is_super_admin || 0,
+      is_super_admin: admin.is_super_admin ? 1 : 0,
       created_at: admin.created_at
     });
   } catch (error) {
@@ -384,25 +374,26 @@ router.get('/me', authenticateToken, async (req, res) => {
 // POST /api/auth/admins/:id/reset-password - Réinitialiser le mot de passe d'un admin (super admin only)
 router.post('/admins/:id/reset-password', authenticateToken, requireSuperAdmin, async (req, res) => {
   try {
-    const adminId = parseInt(req.params.id);
+    await connectDB();
+    const adminId = req.params.id;
     const { newPassword } = req.body;
 
     if (!newPassword || newPassword.length < 6) {
       return res.status(400).json({ error: 'New password must be at least 6 characters' });
     }
 
-    const admin = await dbGet('SELECT * FROM admins WHERE id = ?', [adminId]);
+    const admin = await Admin.findById(adminId);
     if (!admin) {
       return res.status(404).json({ error: 'Admin not found' });
     }
 
-    // Empêcher de réinitialiser son propre mot de passe via cette route
     if (adminId === req.user.id) {
       return res.status(400).json({ error: 'Use the regular password reset for your own account' });
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await dbRun('UPDATE admins SET password = ? WHERE id = ?', [hashedPassword, adminId]);
+    admin.password = hashedPassword;
+    await admin.save();
 
     res.json({ message: 'Password reset successfully' });
   } catch (error) {
@@ -412,6 +403,3 @@ router.post('/admins/:id/reset-password', authenticateToken, requireSuperAdmin, 
 });
 
 module.exports = router;
-
-
-

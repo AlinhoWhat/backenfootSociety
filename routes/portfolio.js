@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { dbGet, dbAll, dbRun } = require('../database');
+const { PortfolioItem, Admin, connectDB } = require('../database');
 const { authenticateToken } = require('../middleware/auth');
 const cloudinary = require('cloudinary').v2;
 const multer = require('multer');
@@ -21,53 +21,38 @@ const upload = multer({
 // GET /api/portfolio - Récupérer toutes les réalisations (public)
 router.get('/', async (req, res) => {
   try {
+    await connectDB();
     const { featured, published } = req.query;
-    let sql = 'SELECT * FROM portfolio_items WHERE 1=1';
-    const params = [];
-
-    // Si on demande seulement les publiés (pour le frontend)
+    
+    const query = {};
+    
     if (published === 'true') {
-      sql += ' AND published = 1';
+      query.published = true;
     }
-
-    // Si on demande seulement les vedettes
+    
     if (featured === 'true') {
-      sql += ' AND featured = 1';
+      query.featured = true;
     }
-
-    sql += ' ORDER BY created_at DESC';
-
-    const items = await dbAll(sql, params);
-    // Convertir tags et images de string JSON à array
-    const itemsWithTags = Array.isArray(items) ? items.map(item => {
-      try {
-        const parsedItem = {
-          ...item,
-          tags: item.tags ? JSON.parse(item.tags) : []
-        };
-        // Parser les images si elles existent
-        if (item.images) {
-          try {
-            parsedItem.images = JSON.parse(item.images);
-          } catch (e) {
-            parsedItem.images = [];
-          }
-        } else {
-          parsedItem.images = [];
-        }
-        return parsedItem;
-      } catch (e) {
-        return {
-          ...item,
-          tags: [],
-          images: []
-        };
-      }
-    }) : [];
-    res.json(itemsWithTags);
+    
+    const items = await PortfolioItem.find(query)
+      .sort({ created_at: -1 })
+      .lean();
+    
+    // Formater les items
+    const formattedItems = items.map(item => ({
+      ...item,
+      id: item._id.toString(),
+      tags: item.tags || [],
+      images: item.images || [],
+      featured: item.featured ? 1 : 0,
+      published: item.published ? 1 : 0,
+      _id: undefined,
+      __v: undefined
+    }));
+    
+    res.json(formattedItems);
   } catch (error) {
     console.error('Error fetching portfolio items:', error);
-    // Retourner un tableau vide au lieu d'un objet d'erreur
     res.status(500).json([]);
   }
 });
@@ -75,6 +60,7 @@ router.get('/', async (req, res) => {
 // GET /api/portfolio/:id - Récupérer une réalisation spécifique
 router.get('/:id', async (req, res) => {
   try {
+    await connectDB();
     const authHeader = req.headers['authorization'];
     const token = authHeader && authHeader.split(' ')[1];
     let includeCreator = false;
@@ -86,56 +72,45 @@ router.get('/:id', async (req, res) => {
         jwt.verify(token, JWT_SECRET);
         includeCreator = true;
       } catch (err) {
-        // Token invalide ou expiré, continuer sans infos créateur
+        // Token invalide
       }
     }
     
     let item;
     if (includeCreator) {
-      item = await dbGet(`
-        SELECT 
-          pi.*,
-          a.username as author,
-          a.username as created_by_username,
-          a.id as created_by_id
-        FROM portfolio_items pi
-        LEFT JOIN admins a ON pi.created_by = a.id
-        WHERE pi.id = ?
-      `, [req.params.id]);
+      item = await PortfolioItem.findById(req.params.id)
+        .populate('created_by', 'username')
+        .lean();
     } else {
-      item = await dbGet(`
-        SELECT 
-          pi.*,
-          a.username as author
-        FROM portfolio_items pi
-        LEFT JOIN admins a ON pi.created_by = a.id
-        WHERE pi.id = ?
-      `, [req.params.id]);
+      item = await PortfolioItem.findById(req.params.id).lean();
     }
     
     if (!item) {
       return res.status(404).json({ error: 'Portfolio item not found' });
     }
-    // Convertir tags et images de string JSON à array
-    if (item.tags) {
-      try {
-        item.tags = JSON.parse(item.tags);
-      } catch (e) {
-        item.tags = [];
-      }
-    } else {
-      item.tags = [];
+    
+    const formatted = {
+      ...item,
+      id: item._id.toString(),
+      author: item.created_by?.username || 'Admin',
+      tags: item.tags || [],
+      images: item.images || [],
+      featured: item.featured ? 1 : 0,
+      published: item.published ? 1 : 0
+    };
+    
+    if (includeCreator && item.created_by) {
+      formatted.created_by_username = item.created_by.username;
+      formatted.created_by_id = item.created_by._id.toString();
     }
-    if (item.images) {
-      try {
-        item.images = JSON.parse(item.images);
-      } catch (e) {
-        item.images = [];
-      }
-    } else {
-      item.images = [];
+    
+    delete formatted._id;
+    delete formatted.__v;
+    if (formatted.created_by && typeof formatted.created_by === 'object') {
+      delete formatted.created_by;
     }
-    res.json(item);
+    
+    res.json(formatted);
   } catch (error) {
     console.error('Error fetching portfolio item:', error);
     res.status(500).json({ error: 'Failed to fetch portfolio item' });
@@ -145,14 +120,14 @@ router.get('/:id', async (req, res) => {
 // POST /api/portfolio - Créer une nouvelle réalisation (admin only)
 router.post('/', authenticateToken, upload.array('images', 5), async (req, res) => {
   try {
+    await connectDB();
     const { title, description, content, category, tags, stats, featured, published } = req.body;
     
     if (!title) {
       return res.status(400).json({ error: 'Title is required' });
     }
 
-    // Récupérer le nom d'utilisateur de l'admin connecté pour l'auteur
-    const admin = await dbGet('SELECT username FROM admins WHERE id = ?', [req.user.id]);
+    const admin = await Admin.findById(req.user.id);
     const author = admin ? admin.username : req.user.username;
 
     let imageUrl = null;
@@ -161,11 +136,9 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
     // Upload images to Cloudinary if provided
     if (req.files && req.files.length > 0) {
       try {
-        // Vérifier que Cloudinary est configuré
         if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
           console.warn('Cloudinary not configured, skipping image upload');
         } else {
-          // Upload toutes les images
           for (const file of req.files) {
             const uploadResult = await new Promise((resolve, reject) => {
               const uploadStream = cloudinary.uploader.upload_stream(
@@ -179,77 +152,68 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
             });
             imagesArray.push(uploadResult.secure_url);
           }
-          // La première image est l'image principale
           imageUrl = imagesArray[0] || null;
         }
       } catch (uploadError) {
         console.error('Cloudinary upload error:', uploadError);
-        // Ne pas bloquer la création si l'upload d'image échoue
         console.warn('Continuing without images due to upload error');
       }
     }
 
-    // Convertir tags string (séparés par virgules) en JSON array
-    let tagsJson = null;
+    // Convertir tags en array
+    let tagsArray = [];
     if (tags) {
       if (typeof tags === 'string') {
-        // Si c'est une string avec des virgules, créer un array
-        const tagsArray = tags.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0);
-        tagsJson = tagsArray.length > 0 ? JSON.stringify(tagsArray) : null;
+        tagsArray = tags.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0);
       } else if (Array.isArray(tags)) {
-        tagsJson = JSON.stringify(tags);
-      } else {
-        tagsJson = JSON.stringify(tags);
+        tagsArray = tags;
       }
     }
 
-    const imagesJson = imagesArray.length > 0 ? JSON.stringify(imagesArray) : null;
+    const newItem = new PortfolioItem({
+      title,
+      description: description || null,
+      content: content || null,
+      category: category || null,
+      image_url: imageUrl,
+      images: imagesArray,
+      tags: tagsArray,
+      stats: stats || null,
+      featured: featured === 'true' || featured === true,
+      published: published === 'true' || published === true,
+      created_by: req.user.id
+    });
 
-    const result = await dbRun(
-      `INSERT INTO portfolio_items (title, description, content, category, image_url, images, tags, stats, featured, published, created_by, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
-      [
-        title,
-        description || null,
-        content || null,
-        category || null,
-        imageUrl,
-        imagesJson,
-        tagsJson,
-        stats || null,
-        featured === 'true' || featured === true ? 1 : 0,
-        published === 'true' || published === true ? 1 : 0,
-        req.user.id // ID de l'admin qui crée la réalisation
-      ]
-    );
-
-    const newItem = await dbGet(`
-      SELECT 
-        pi.*,
-        a.username as author,
-        a.username as created_by_username,
-        a.id as created_by_id
-      FROM portfolio_items pi
-      LEFT JOIN admins a ON pi.created_by = a.id
-      WHERE pi.id = ?
-    `, [result.id]);
-    if (newItem && newItem.tags) {
-      try {
-        newItem.tags = JSON.parse(newItem.tags);
-      } catch (e) {
-        newItem.tags = [];
-      }
-    } else if (newItem) {
-      newItem.tags = [];
+    await newItem.save();
+    
+    const item = await PortfolioItem.findById(newItem._id)
+      .populate('created_by', 'username')
+      .lean();
+    
+    const formatted = {
+      ...item,
+      id: item._id.toString(),
+      author: item.created_by?.username || 'Admin',
+      tags: item.tags || [],
+      images: item.images || [],
+      featured: item.featured ? 1 : 0,
+      published: item.published ? 1 : 0,
+      created_by_username: item.created_by?.username,
+      created_by_id: item.created_by?._id.toString()
+    };
+    
+    delete formatted._id;
+    delete formatted.__v;
+    if (formatted.created_by && typeof formatted.created_by === 'object') {
+      delete formatted.created_by;
     }
-    res.status(201).json(newItem);
+    
+    res.status(201).json(formatted);
   } catch (error) {
     console.error('Error creating portfolio item:', error);
-    console.error('Error details:', error.message, error.stack);
     res.status(500).json({ 
       error: 'Failed to create portfolio item',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined,
-      stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
+      details: process.env.NODE_ENV === 'development' ? error.message : undefined
     });
   }
 });
@@ -257,39 +221,27 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
 // PUT /api/portfolio/:id - Mettre à jour une réalisation (admin only)
 router.put('/:id', authenticateToken, upload.array('images', 5), async (req, res) => {
   try {
+    await connectDB();
     const { title, description, content, category, tags, stats, featured, published, existingImages } = req.body;
     
-    const existing = await dbGet('SELECT * FROM portfolio_items WHERE id = ?', [req.params.id]);
+    const existing = await PortfolioItem.findById(req.params.id);
     if (!existing) {
       return res.status(404).json({ error: 'Portfolio item not found' });
     }
 
     let imageUrl = existing.image_url;
-    let imagesArray = [];
+    let imagesArray = existing.images || [];
 
     // Gérer les images existantes
     if (existingImages) {
       try {
         imagesArray = typeof existingImages === 'string' ? JSON.parse(existingImages) : existingImages;
       } catch (e) {
-        // Si pas d'images existantes, parser depuis la base
-        if (existing.images) {
-          try {
-            imagesArray = JSON.parse(existing.images);
-          } catch (e2) {
-            imagesArray = [];
-          }
-        }
-      }
-    } else if (existing.images) {
-      try {
-        imagesArray = JSON.parse(existing.images);
-      } catch (e) {
-        imagesArray = [];
+        imagesArray = existing.images || [];
       }
     }
 
-    // Upload nouvelles images to Cloudinary if provided
+    // Upload nouvelles images
     if (req.files && req.files.length > 0) {
       try {
         for (const file of req.files) {
@@ -305,7 +257,6 @@ router.put('/:id', authenticateToken, upload.array('images', 5), async (req, res
           });
           imagesArray.push(uploadResult.secure_url);
         }
-        // La première image est l'image principale
         imageUrl = imagesArray[0] || existing.image_url;
       } catch (uploadError) {
         console.error('Cloudinary upload error:', uploadError);
@@ -313,81 +264,58 @@ router.put('/:id', authenticateToken, upload.array('images', 5), async (req, res
       }
     }
 
-    const imagesJson = imagesArray.length > 0 ? JSON.stringify(imagesArray) : null;
-
-    // Convertir tags en JSON string
-    let tagsJson = existing.tags;
+    // Convertir tags en array
+    let tagsArray = existing.tags || [];
     if (tags !== undefined) {
       if (typeof tags === 'string') {
-        // Si c'est une string avec des virgules, créer un array
         if (tags.includes(',')) {
-          const tagsArray = tags.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0);
-          tagsJson = tagsArray.length > 0 ? JSON.stringify(tagsArray) : null;
+          tagsArray = tags.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0);
         } else if (tags.length > 0) {
-          // Si c'est une string simple, créer un array avec un seul élément
-          tagsJson = JSON.stringify([tags.trim()]);
+          tagsArray = [tags.trim()];
         } else {
-          tagsJson = null;
+          tagsArray = [];
         }
       } else if (Array.isArray(tags)) {
-        tagsJson = JSON.stringify(tags);
-      } else {
-        // Si c'est déjà du JSON string, l'utiliser tel quel
-        try {
-          JSON.parse(tags);
-          tagsJson = tags;
-        } catch (e) {
-          tagsJson = JSON.stringify([tags]);
-        }
+        tagsArray = tags;
       }
     }
 
-    await dbRun(
-      `UPDATE portfolio_items 
-       SET title = ?, description = ?, content = ?, category = ?, image_url = ?, images = ?, tags = ?, 
-           stats = ?, featured = ?, published = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ?`,
-      [
-        title || existing.title,
-        description !== undefined ? description : existing.description,
-        content !== undefined ? content : existing.content,
-        category !== undefined ? category : existing.category,
-        imageUrl,
-        imagesJson !== null ? imagesJson : existing.images,
-        tagsJson,
-        stats !== undefined ? stats : existing.stats,
-        featured !== undefined ? (featured === 'true' || featured === true ? 1 : 0) : existing.featured,
-        published !== undefined ? (published === 'true' || published === true ? 1 : 0) : existing.published,
-        req.params.id
-      ]
-    );
+    // Mettre à jour
+    existing.title = title || existing.title;
+    existing.description = description !== undefined ? description : existing.description;
+    existing.content = content !== undefined ? content : existing.content;
+    existing.category = category !== undefined ? category : existing.category;
+    existing.image_url = imageUrl;
+    existing.images = imagesArray;
+    existing.tags = tagsArray;
+    existing.stats = stats !== undefined ? stats : existing.stats;
+    existing.featured = featured !== undefined ? (featured === 'true' || featured === true) : existing.featured;
+    existing.published = published !== undefined ? (published === 'true' || published === true) : existing.published;
+    existing.updated_at = new Date();
 
-    const updatedItem = await dbGet(`
-      SELECT 
-        pi.*,
-        a.username as author
-      FROM portfolio_items pi
-      LEFT JOIN admins a ON pi.created_by = a.id
-      WHERE pi.id = ?
-    `, [req.params.id]);
+    await existing.save();
     
-    // Parser les tags en toute sécurité
-    if (updatedItem.tags) {
-      try {
-        updatedItem.tags = JSON.parse(updatedItem.tags);
-      } catch (e) {
-        // Si le parsing échoue, essayer de traiter comme une string simple
-        if (typeof updatedItem.tags === 'string' && updatedItem.tags.length > 0) {
-          updatedItem.tags = [updatedItem.tags];
-        } else {
-          updatedItem.tags = [];
-        }
-      }
-    } else {
-      updatedItem.tags = [];
+    const updatedItem = await PortfolioItem.findById(req.params.id)
+      .populate('created_by', 'username')
+      .lean();
+    
+    const formatted = {
+      ...updatedItem,
+      id: updatedItem._id.toString(),
+      author: updatedItem.created_by?.username || 'Admin',
+      tags: updatedItem.tags || [],
+      images: updatedItem.images || [],
+      featured: updatedItem.featured ? 1 : 0,
+      published: updatedItem.published ? 1 : 0
+    };
+    
+    delete formatted._id;
+    delete formatted.__v;
+    if (formatted.created_by && typeof formatted.created_by === 'object') {
+      delete formatted.created_by;
     }
     
-    res.json(updatedItem);
+    res.json(formatted);
   } catch (error) {
     console.error('Error updating portfolio item:', error);
     res.status(500).json({ error: 'Failed to update portfolio item' });
@@ -397,7 +325,8 @@ router.put('/:id', authenticateToken, upload.array('images', 5), async (req, res
 // DELETE /api/portfolio/:id - Supprimer une réalisation (admin only)
 router.delete('/:id', authenticateToken, async (req, res) => {
   try {
-    const item = await dbGet('SELECT * FROM portfolio_items WHERE id = ?', [req.params.id]);
+    await connectDB();
+    const item = await PortfolioItem.findById(req.params.id);
     if (!item) {
       return res.status(404).json({ error: 'Portfolio item not found' });
     }
@@ -412,7 +341,7 @@ router.delete('/:id', authenticateToken, async (req, res) => {
       }
     }
 
-    await dbRun('DELETE FROM portfolio_items WHERE id = ?', [req.params.id]);
+    await PortfolioItem.findByIdAndDelete(req.params.id);
     res.json({ message: 'Portfolio item deleted successfully' });
   } catch (error) {
     console.error('Error deleting portfolio item:', error);
@@ -421,4 +350,3 @@ router.delete('/:id', authenticateToken, async (req, res) => {
 });
 
 module.exports = router;
-
