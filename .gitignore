@@ -1,0 +1,24 @@
+# Dépendances
+node_modules/
+
+# Variables d'environnement (CRITIQUE - Ne jamais commiter !)
+.env
+.env.local
+.env.*.local
+
+# Base de données
+*.sqlite
+*.sqlite3
+*.db
+*.db3
+database.sqlite
+database.sqlite3
+
+# Logs
+*.log
+logs/
+
+# Fichiers temporaires
+*.tmp
+*.temp
+*.cache
