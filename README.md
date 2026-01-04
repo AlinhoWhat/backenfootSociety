@@ -108,3 +108,6 @@ Les images sont automatiquement uploadées sur Cloudinary lors de la création/m
 - `blog_articles` - Articles de blog
 - `portfolio_items` - Réalisations portfolio
 - `admins` - Comptes administrateurs
+-
+
+-Ok
