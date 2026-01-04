@@ -52,7 +52,6 @@ router.get('/', async (req, res) => {
     
     res.json(formattedItems);
   } catch (error) {
-    console.error('Error fetching portfolio items:', error);
     res.status(500).json([]);
   }
 });
@@ -112,7 +111,6 @@ router.get('/:id', async (req, res) => {
     
     res.json(formatted);
   } catch (error) {
-    console.error('Error fetching portfolio item:', error);
     res.status(500).json({ error: 'Failed to fetch portfolio item' });
   }
 });
@@ -136,9 +134,7 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
     // Upload images to Cloudinary if provided
     if (req.files && req.files.length > 0) {
       try {
-        if (!process.env.CLOUDINARY_CLOUD_NAME || !process.env.CLOUDINARY_API_KEY || !process.env.CLOUDINARY_API_SECRET) {
-          console.warn('Cloudinary not configured, skipping image upload');
-        } else {
+        if (process.env.CLOUDINARY_CLOUD_NAME && process.env.CLOUDINARY_API_KEY && process.env.CLOUDINARY_API_SECRET) {
           for (const file of req.files) {
             const uploadResult = await new Promise((resolve, reject) => {
               const uploadStream = cloudinary.uploader.upload_stream(
@@ -155,8 +151,7 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
           imageUrl = imagesArray[0] || null;
         }
       } catch (uploadError) {
-        console.error('Cloudinary upload error:', uploadError);
-        console.warn('Continuing without images due to upload error');
+        // Continue without images if upload fails
       }
     }
 
@@ -210,11 +205,7 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
     
     res.status(201).json(formatted);
   } catch (error) {
-    console.error('Error creating portfolio item:', error);
-    res.status(500).json({ 
-      error: 'Failed to create portfolio item',
-      details: process.env.NODE_ENV === 'development' ? error.message : undefined
-    });
+    res.status(500).json({ error: 'Failed to create portfolio item' });
   }
 });
 
@@ -259,7 +250,6 @@ router.put('/:id', authenticateToken, upload.array('images', 5), async (req, res
         }
         imageUrl = imagesArray[0] || existing.image_url;
       } catch (uploadError) {
-        console.error('Cloudinary upload error:', uploadError);
         return res.status(500).json({ error: 'Failed to upload images' });
       }
     }
@@ -317,7 +307,6 @@ router.put('/:id', authenticateToken, upload.array('images', 5), async (req, res
     
     res.json(formatted);
   } catch (error) {
-    console.error('Error updating portfolio item:', error);
     res.status(500).json({ error: 'Failed to update portfolio item' });
   }
 });
@@ -337,14 +326,13 @@ router.delete('/:id', authenticateToken, async (req, res) => {
         const publicId = item.image_url.split('/').slice(-2).join('/').split('.')[0];
         await cloudinary.uploader.destroy(`footsociety/portfolio/${publicId}`);
       } catch (deleteError) {
-        console.warn('Could not delete image from Cloudinary:', deleteError);
+        // Ignore Cloudinary deletion errors
       }
     }
 
     await PortfolioItem.findByIdAndDelete(req.params.id);
     res.json({ message: 'Portfolio item deleted successfully' });
   } catch (error) {
-    console.error('Error deleting portfolio item:', error);
     res.status(500).json({ error: 'Failed to delete portfolio item' });
   }
 });

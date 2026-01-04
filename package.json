@@ -9,6 +9,7 @@
     "init-admin": "node scripts/initAdmin.js",
     "test-login": "node scripts/testLogin.js",
     "fix-admin": "node scripts/fixAdminPassword.js",
+    "check-db": "node scripts/checkDatabase.js",
     "prod": "NODE_ENV=production node index.js"
   },
   "author": "",

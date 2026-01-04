@@ -90,7 +90,6 @@ router.get('/', async (req, res) => {
     
     res.json(formattedArticles);
   } catch (error) {
-    console.error('Error fetching blog articles:', error);
     res.status(500).json([]);
   }
 });
@@ -150,7 +149,6 @@ router.get('/:id', async (req, res) => {
     
     res.json(formatted);
   } catch (error) {
-    console.error('Error fetching blog article:', error);
     res.status(500).json({ error: 'Failed to fetch blog article' });
   }
 });
@@ -190,7 +188,6 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
         }
         imageUrl = imagesArray[0] || null;
       } catch (uploadError) {
-        console.error('Cloudinary upload error:', uploadError);
         return res.status(500).json({ error: 'Failed to upload images' });
       }
     }
@@ -237,7 +234,6 @@ router.post('/', authenticateToken, upload.array('images', 5), async (req, res) 
     
     res.status(201).json(formatted);
   } catch (error) {
-    console.error('Error creating blog article:', error);
     res.status(500).json({ error: 'Failed to create blog article' });
   }
 });
@@ -283,7 +279,6 @@ router.put('/:id', authenticateToken, upload.array('images', 5), async (req, res
         }
         imageUrl = imagesArray[0] || existing.image_url;
       } catch (uploadError) {
-        console.error('Cloudinary upload error:', uploadError);
         return res.status(500).json({ error: 'Failed to upload images' });
       }
     }
@@ -325,7 +320,6 @@ router.put('/:id', authenticateToken, upload.array('images', 5), async (req, res
     
     res.json(formatted);
   } catch (error) {
-    console.error('Error updating blog article:', error);
     res.status(500).json({ error: 'Failed to update blog article' });
   }
 });
@@ -345,14 +339,13 @@ router.delete('/:id', authenticateToken, async (req, res) => {
         const publicId = article.image_url.split('/').slice(-2).join('/').split('.')[0];
         await cloudinary.uploader.destroy(`footsociety/blog/${publicId}`);
       } catch (deleteError) {
-        console.warn('Could not delete image from Cloudinary:', deleteError);
+        // Ignore Cloudinary deletion errors
       }
     }
 
     await BlogArticle.findByIdAndDelete(req.params.id);
     res.json({ message: 'Article deleted successfully' });
   } catch (error) {
-    console.error('Error deleting blog article:', error);
     res.status(500).json({ error: 'Failed to delete blog article' });
   }
 });

@@ -32,7 +32,6 @@ const requireSuperAdmin = async (req, res, next) => {
     
     next();
   } catch (error) {
-    console.error('Error checking super admin:', error);
     res.status(500).json({ error: 'Failed to verify permissions' });
   }
 };

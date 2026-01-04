@@ -1,27 +1,70 @@
 const mongoose = require('mongoose');
+require('dotenv').config(); // Charger les variables d'environnement
 
 // URL de connexion MongoDB depuis les variables d'environnement
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/footsociety';
+let MONGODB_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/footsociety';
 
-// Options de connexion
+// S'assurer que le nom de la base de données est dans l'URI
+// Si l'URI ne contient pas de nom de base (se termine par / ou ?), l'ajouter
+if (MONGODB_URI.includes('mongodb+srv://') || MONGODB_URI.includes('mongodb://')) {
+  // Séparer l'URI de base et les paramètres de requête
+  const uriParts = MONGODB_URI.split('?');
+  let baseUri = uriParts[0];
+  const queryParams = uriParts[1] ? '?' + uriParts[1] : '';
+  
+  // Vérifier si l'URI se termine par / (pas de nom de base) ou ne contient pas de nom de base
+  // Format attendu: mongodb://host:port/database ou mongodb+srv://host/database
+  const hasDatabaseName = baseUri.match(/\/[^\/\?]+$/); // Vérifie s'il y a quelque chose après le dernier /
+  
+  if (!hasDatabaseName || baseUri.endsWith('/')) {
+    // Pas de base de données spécifiée, ajouter /footsociety
+    if (baseUri.endsWith('/')) {
+      baseUri = baseUri.slice(0, -1); // Enlever le / final
+    }
+    MONGODB_URI = baseUri + '/footsociety' + queryParams;
+  }
+}
+
+// Options de connexion (les options useNewUrlParser et useUnifiedTopology sont dépréciées dans Mongoose 6+)
 const mongooseOptions = {
-  useNewUrlParser: true,
-  useUnifiedTopology: true,
+  // Ces options ne sont plus nécessaires avec Mongoose 6+
 };
 
 // Connexion à MongoDB
 let isConnected = false;
 
 const connectDB = async () => {
-  if (isConnected) {
-    console.log('MongoDB déjà connecté');
-    return;
+  // Vérifier si on est déjà connecté à la bonne base
+  if (isConnected && mongoose.connection.readyState === 1) {
+    const currentDb = mongoose.connection.db?.databaseName;
+    const expectedDb = MONGODB_URI.split('/').pop().split('?')[0];
+    
+    if (currentDb === expectedDb) {
+      return;
+    } else {
+      // Se reconnecter à la bonne base
+      await mongoose.disconnect();
+      isConnected = false;
+    }
   }
 
   try {
+    // S'assurer qu'on est déconnecté avant de se reconnecter
+    if (mongoose.connection.readyState !== 0) {
+      await mongoose.disconnect();
+    }
+    
     await mongoose.connect(MONGODB_URI, mongooseOptions);
     isConnected = true;
-    console.log('✅ MongoDB connecté avec succès');
+    console.log(`✅ MongoDB connecté avec succès`);
+    
+    // Vérifier qu'on est bien connecté à la bonne base
+    const dbName = mongoose.connection.db?.databaseName;
+    const expectedDb = MONGODB_URI.split('/').pop().split('?')[0];
+    if (expectedDb && dbName !== expectedDb) {
+      console.error(`❌ ERREUR: Connecté à "${dbName}" au lieu de "${expectedDb}"`);
+      console.error(`   Vérifiez votre MONGODB_URI dans server/.env`);
+    }
   } catch (error) {
     console.error('❌ Erreur de connexion MongoDB:', error.message);
     process.exit(1);
@@ -30,7 +73,6 @@ const connectDB = async () => {
 
 // Gestion de la déconnexion
 mongoose.connection.on('disconnected', () => {
-  console.log('MongoDB déconnecté');
   isConnected = false;
 });
 

@@ -3,7 +3,7 @@ const router = express.Router();
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
-const { Admin, PasswordResetToken, connectDB } = require('../database');
+const { Admin, PasswordResetToken, connectDB, mongoose } = require('../database');
 const { JWT_SECRET, authenticateToken, requireSuperAdmin } = require('../middleware/auth');
 
 // POST /api/auth/login - Connexion admin
@@ -12,53 +12,34 @@ router.post('/login', async (req, res) => {
     await connectDB();
     const { username, password } = req.body;
 
-    // Debug logs (en développement seulement)
-    if (process.env.NODE_ENV === 'development') {
-      console.log('Login attempt:', { 
-        username: username ? username.substring(0, 10) + '...' : 'missing',
-        passwordLength: password ? password.length : 0,
-        hasUsername: !!username,
-        hasPassword: !!password
-      });
-    }
-
     // Nettoyer les inputs
     const cleanUsername = username ? username.trim() : '';
     const cleanPassword = password ? password.trim() : '';
 
     if (!cleanUsername || !cleanPassword) {
-      console.log('Login failed: Missing username or password');
       return res.status(400).json({ error: 'Username and password are required' });
     }
 
     if (!JWT_SECRET) {
-      console.error('JWT_SECRET is not defined');
       return res.status(500).json({ error: 'Server configuration error' });
     }
 
-    // Rechercher l'admin (exact match d'abord, puis insensible à la casse)
-    let admin = await Admin.findOne({ username: cleanUsername });
-    if (!admin) {
-      // Essayer insensible à la casse
-      admin = await Admin.findOne({ 
-        username: { $regex: new RegExp(`^${cleanUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } 
-      });
-    }
+    // Rechercher l'admin
+    const admin = await Admin.findOne({ 
+      username: { $regex: new RegExp(`^${cleanUsername}$`, 'i') } 
+    });
     
     if (!admin) {
-      console.log(`Login attempt failed: User "${cleanUsername}" not found`);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
     // Vérifier que le mot de passe est bien hashé
     if (!admin.password || !admin.password.startsWith('$2')) {
-      console.error(`Admin "${admin.username}" has invalid password hash`);
       return res.status(500).json({ error: 'Server configuration error' });
     }
 
     const isValidPassword = await bcrypt.compare(cleanPassword, admin.password);
     if (!isValidPassword) {
-      console.log(`Login attempt failed: Invalid password for user "${admin.username}"`);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
@@ -74,12 +55,8 @@ router.post('/login', async (req, res) => {
       is_super_admin: admin.is_super_admin ? 1 : 0
     });
   } catch (error) {
-    console.error('Error during login:', error);
     if (!res.headersSent) {
-      res.status(500).json({ 
-        error: 'Failed to login',
-        details: process.env.NODE_ENV === 'development' ? (error.message || String(error)) : undefined
-      });
+      res.status(500).json({ error: 'Failed to login' });
     }
   }
 });
@@ -102,7 +79,6 @@ router.get('/admins', authenticateToken, requireSuperAdmin, async (req, res) => 
     
     res.json(formatted);
   } catch (error) {
-    console.error('Error fetching admins:', error);
     res.status(500).json({ error: 'Failed to fetch admins' });
   }
 });
@@ -146,7 +122,6 @@ router.post('/admins', authenticateToken, requireSuperAdmin, async (req, res) =>
 
     res.status(201).json({ message: 'Admin created successfully' });
   } catch (error) {
-    console.error('Error creating admin:', error);
     res.status(500).json({ error: 'Failed to create admin' });
   }
 });
@@ -206,7 +181,6 @@ router.put('/admins/:id', authenticateToken, async (req, res) => {
     await admin.save();
     res.json({ message: 'Admin updated successfully' });
   } catch (error) {
-    console.error('Error updating admin:', error);
     res.status(500).json({ error: 'Failed to update admin' });
   }
 });
@@ -234,7 +208,6 @@ router.delete('/admins/:id', authenticateToken, requireSuperAdmin, async (req, r
     await Admin.findByIdAndDelete(adminId);
     res.json({ message: 'Admin deleted successfully' });
   } catch (error) {
-    console.error('Error deleting admin:', error);
     res.status(500).json({ error: 'Failed to delete admin' });
   }
 });
@@ -326,12 +299,9 @@ Ce lien expire dans 1 heure.
         };
 
         await emailTransporter.sendMail(mailOptions);
-        console.log('Password reset email sent');
-      } else {
-        console.warn('SMTP not configured, password reset link:', resetUrl);
       }
     } catch (emailError) {
-      console.error('Error sending password reset email:', emailError);
+      // Ignore email errors
     }
 
     res.json({ 
@@ -339,7 +309,6 @@ Ce lien expire dans 1 heure.
       resetUrl: process.env.NODE_ENV === 'development' ? resetUrl : undefined
     });
   } catch (error) {
-    console.error('Error in forgot-password:', error);
     res.status(500).json({ error: 'Failed to process password reset request' });
   }
 });
@@ -375,7 +344,6 @@ router.post('/reset-password', async (req, res) => {
 
     res.json({ message: 'Password reset successfully' });
   } catch (error) {
-    console.error('Error in reset-password:', error);
     res.status(500).json({ error: 'Failed to reset password' });
   }
 });
@@ -397,7 +365,6 @@ router.get('/me', authenticateToken, async (req, res) => {
       created_at: admin.created_at
     });
   } catch (error) {
-    console.error('Error verifying token:', error);
     res.status(500).json({ error: 'Failed to verify token' });
   }
 });
@@ -428,7 +395,6 @@ router.post('/admins/:id/reset-password', authenticateToken, requireSuperAdmin, 
 
     res.json({ message: 'Password reset successfully' });
   } catch (error) {
-    console.error('Error resetting password:', error);
     res.status(500).json({ error: 'Failed to reset password' });
   }
 });

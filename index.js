@@ -21,7 +21,7 @@ let rateLimit;
 try {
   rateLimit = require('express-rate-limit');
 } catch (e) {
-  console.warn('express-rate-limit not installed. Install it with: npm install express-rate-limit');
+  // express-rate-limit not installed
 }
 
 // Configuration CORS
@@ -40,7 +40,6 @@ const corsOptions = {
     // Si aucune origine n'est spécifiée en production, autoriser toutes (pour éviter les blocages)
     // IMPORTANT: En production, définissez FRONTEND_URL pour la sécurité
     if (allowedOrigins.length === 0) {
-      console.warn('⚠️  FRONTEND_URL non défini en production. CORS autorise toutes les origines.');
       return callback(null, true);
     }
     
@@ -53,8 +52,6 @@ const corsOptions = {
     if (allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
-      console.error('❌ CORS: Origine non autorisée:', origin);
-      console.error('   Origines autorisées:', allowedOrigins);
       callback(new Error('Not allowed by CORS'));
     }
   },
@@ -108,10 +105,7 @@ const frontendPath = fs.existsSync(frontendDistPath) ? frontendDistPath : rootDi
 const distExists = fs.existsSync(frontendPath);
 
 if (isProduction || distExists) {
-  if (!distExists) {
-    console.warn(`⚠️  Warning: Dossier dist/ introuvable à ${frontendPath}`);
-    console.warn('   Exécutez "npm run build" à la racine du projet');
-  } else {
+  if (distExists) {
     // Servir les fichiers statiques UNIQUEMENT pour les routes non-API
     app.use((req, res, next) => {
       // Ignorer les routes API
@@ -134,7 +128,6 @@ if (isProduction || distExists) {
       });
     });
     
-    console.log(`✅ Frontend statique servi depuis: ${frontendPath}`);
     
     // Pour toutes les routes qui ne sont pas /api/*, servir index.html (SPA)
     // IMPORTANT: Cette route doit être la dernière, après toutes les routes API
@@ -158,14 +151,11 @@ if (isProduction || distExists) {
       // Servir index.html pour toutes les autres routes (SPA routing)
       res.sendFile(indexPath, (err) => {
         if (err) {
-          console.error('Error sending index.html:', err);
           res.status(500).send('Error loading frontend');
         }
       });
     });
   }
-} else {
-  console.log('ℹ️  Mode développement: Frontend servi par Vite (port 8080)');
 }
 
 // Initialize transporter once. If SMTP_HOST is not provided, create an Ethereal test account
@@ -181,7 +171,6 @@ const smtpSecure = smtpPort === 465;
 
 async function initTransporter() {
   if (!smtpHost) {
-    console.warn('Warning: SMTP_HOST is not set. Creating Ethereal test account for development.');
     try {
       const testAccount = await nodemailer.createTestAccount();
       transporter = nodemailer.createTransport({
@@ -195,12 +184,10 @@ async function initTransporter() {
       });
       usingEthereal = true;
       etherealUser = testAccount.user;
-      console.log('Ethereal account created. Use the preview URL to view the message.');
     } catch (err) {
-      console.error('Failed to create Ethereal test account:', err && err.message ? err.message : err);
+      // Ignore Ethereal account creation errors
     }
   } else {
-    console.log(`Using SMTP host: ${smtpHost}:${smtpPort} secure=${smtpSecure}`);
     transporter = nodemailer.createTransport({
       host: smtpHost,
       port: smtpPort,
@@ -215,14 +202,11 @@ async function initTransporter() {
   if (transporter) {
     try {
       await transporter.verify();
-      console.log('SMTP transporter verified and ready');
     } catch (err) {
-      console.error('SMTP transporter verification failed:', err && err.message ? err.message : err);
       // If we had a host provided and verification failed, try the alternate common OVH port/protocol
       if (smtpHost) {
         const altPort = smtpPort === 587 ? 465 : 587;
         const altSecure = smtpPort === 587 ? true : false;
-        console.log(`Retrying transporter with alternate settings: ${smtpHost}:${altPort} secure=${altSecure}`);
         transporter = nodemailer.createTransport({
           host: smtpHost,
           port: altPort,
@@ -235,9 +219,8 @@ async function initTransporter() {
 
         try {
           await transporter.verify();
-          console.log('SMTP transporter verified with alternate settings and ready');
         } catch (err2) {
-          console.error('Alternate SMTP transporter verification also failed:', err2 && err2.message ? err2.message : err2);
+          // Ignore alternate verification errors
         }
       }
     }
@@ -270,57 +253,39 @@ app.post('/api/contact', async (req, res) => {
     const recipient = process.env.CONTACT_RECIPIENT || process.env.SMTP_USER || etherealUser;
     if (!recipient) {
       const msg = 'No recipient configured. Set CONTACT_RECIPIENT or SMTP_USER in server/.env';
-      console.error(msg);
       return res.status(500).json({ error: msg });
     }
     mailOptions.to = recipient;
 
-  const info = await transporter.sendMail(mailOptions);
-  console.log('Email sent, messageId=', info.messageId);
-  // Log accepted/rejected recipients and raw response for delivery debugging
-  if (info.accepted) console.log('Accepted recipients:', info.accepted);
-  if (info.rejected) console.log('Rejected recipients:', info.rejected);
-  if (info.response) console.log('SMTP response:', info.response);
+    const info = await transporter.sendMail(mailOptions);
 
     // If using Ethereal, include preview URL in response for easy testing
     let previewUrl;
     if (usingEthereal) {
       try {
         previewUrl = nodemailer.getTestMessageUrl(info);
-        console.log('Preview URL:', previewUrl);
       } catch (e) {
-        console.warn('Could not get test message URL:', e && e.message ? e.message : e);
+        // Ignore
       }
     }
 
-    return res.json({ ok: true, messageId: info.messageId, previewUrl });
+    return res.json({ ok: true, previewUrl });
   } catch (err) {
-    console.error('Failed to send mail. Error:', err && err.message ? err.message : err);
-    if (err && err.response) console.error('SMTP response:', err.response);
-    return res.status(500).json({ error: err && err.message ? err.message : 'Failed to send email', details: err && err.response ? err.response : undefined });
+    return res.status(500).json({ error: err && err.message ? err.message : 'Failed to send email' });
   }
 });
 
 // Middleware de gestion d'erreur global - DOIT être après toutes les routes
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err.message || err);
   // Toujours retourner du JSON pour les routes API
   if (req.path.startsWith('/api')) {
     return res.status(err.status || 500).json({
-      error: err.message || 'Internal server error',
-      details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+      error: err.message || 'Internal server error'
     });
   }
   next(err);
 });
 
-// Middleware de logging pour debug (optionnel)
-if (process.env.DEBUG === 'true') {
-  app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-    next();
-  });
-}
 
 app.listen(port, () => {
   console.log(`Server listening on port ${port}`);
