@@ -42,7 +42,14 @@ async function initAdmin() {
     const isSuperAdmin = !existingSuperAdmin; // Premier admin = super admin
 
     const hashedPassword = await bcrypt.hash(password, 10);
-    await Admin.create({
+    
+    // Vérifier que le hash est bien créé
+    if (!hashedPassword || !hashedPassword.startsWith('$2')) {
+      console.error('Erreur lors du hashage du mot de passe');
+      process.exit(1);
+    }
+    
+    const newAdmin = await Admin.create({
       username,
       email: email || null,
       password: hashedPassword,
@@ -50,6 +57,9 @@ async function initAdmin() {
     });
 
     console.log('\n✅ Compte admin créé avec succès!');
+    console.log(`ID: ${newAdmin._id}`);
+    console.log(`Username: ${newAdmin.username}`);
+    console.log(`Password hash: ${newAdmin.password.substring(0, 20)}...`);
     console.log(`Nom d'utilisateur: ${username}`);
     if (isSuperAdmin) {
       console.log('⚠️  Ce compte est créé en tant que SUPER ADMINISTRATEUR');

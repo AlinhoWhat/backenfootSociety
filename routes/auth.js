@@ -12,7 +12,22 @@ router.post('/login', async (req, res) => {
     await connectDB();
     const { username, password } = req.body;
 
-    if (!username || !password) {
+    // Debug logs (en développement seulement)
+    if (process.env.NODE_ENV === 'development') {
+      console.log('Login attempt:', { 
+        username: username ? username.substring(0, 10) + '...' : 'missing',
+        passwordLength: password ? password.length : 0,
+        hasUsername: !!username,
+        hasPassword: !!password
+      });
+    }
+
+    // Nettoyer les inputs
+    const cleanUsername = username ? username.trim() : '';
+    const cleanPassword = password ? password.trim() : '';
+
+    if (!cleanUsername || !cleanPassword) {
+      console.log('Login failed: Missing username or password');
       return res.status(400).json({ error: 'Username and password are required' });
     }
 
@@ -21,13 +36,29 @@ router.post('/login', async (req, res) => {
       return res.status(500).json({ error: 'Server configuration error' });
     }
 
-    const admin = await Admin.findOne({ username });
+    // Rechercher l'admin (exact match d'abord, puis insensible à la casse)
+    let admin = await Admin.findOne({ username: cleanUsername });
     if (!admin) {
+      // Essayer insensible à la casse
+      admin = await Admin.findOne({ 
+        username: { $regex: new RegExp(`^${cleanUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } 
+      });
+    }
+    
+    if (!admin) {
+      console.log(`Login attempt failed: User "${cleanUsername}" not found`);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const isValidPassword = await bcrypt.compare(password, admin.password);
+    // Vérifier que le mot de passe est bien hashé
+    if (!admin.password || !admin.password.startsWith('$2')) {
+      console.error(`Admin "${admin.username}" has invalid password hash`);
+      return res.status(500).json({ error: 'Server configuration error' });
+    }
+
+    const isValidPassword = await bcrypt.compare(cleanPassword, admin.password);
     if (!isValidPassword) {
+      console.log(`Login attempt failed: Invalid password for user "${admin.username}"`);
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
